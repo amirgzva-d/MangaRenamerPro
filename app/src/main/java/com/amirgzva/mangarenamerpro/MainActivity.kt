@@ -81,6 +81,17 @@ private fun MangaFileManager() {
     var seriesName by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     val selected = remember { mutableStateListOf<String>() }
+    var pendingRename by remember { mutableStateOf<List<Pair<File, String>>>(emptyList()) }
+
+    LaunchedEffect(pendingRename) {
+        val batch = pendingRename
+        if (batch.isNotEmpty()) {
+            val result = withContext(Dispatchers.IO) { batch.count { (file, newName) -> runCatching { file.renameTo(File(file.parentFile, newName)) }.getOrDefault(false) } }
+            status = "تغییر نام موفق: $result از ${batch.size} فایل"
+            pendingRename = emptyList()
+            refreshKey++
+        }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
