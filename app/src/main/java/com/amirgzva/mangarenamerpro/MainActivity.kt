@@ -41,6 +41,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Files
+import java.util.UUID
 import java.util.Locale
 
 private val Bg = Color(0xFF08090D)
@@ -105,9 +106,25 @@ private fun MangaFileManager() {
                     if (!directory.exists() || !directory.isDirectory || !directory.canRead()) {
                         throw SecurityException("دسترسی خواندن این پوشه وجود ندارد")
                     }
-                    directory.listFiles()?.sortedWith(
-                        compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) })
-                    ) ?: throw IllegalStateException("خواندن فهرست پوشه ناموفق بود")
+                    val raw = directory.listFiles()
+                        ?: throw IllegalStateException("خواندن فهرست پوشه ناموفق بود")
+                    val isLibraryRoot = directory.absoluteFile.normalize() == File(Environment.getExternalStorageDirectory().absolutePath).absoluteFile.normalize()
+                    val filtered = if (isLibraryRoot) {
+                        // Library root: show only folders that directly contain manga files.
+                        raw.asSequence()
+                            .filter { it.isDirectory && it.canRead() }
+                            .filter { bookFolder ->
+                                runCatching {
+                                    bookFolder.listFiles()?.any { child ->
+                                        child.isFile && child.extension.lowercase(Locale.ROOT) in MangaExtensions
+                                    } == true
+                                }.getOrDefault(false)
+                            }.toList()
+                    } else {
+                        // Inside a book folder: show only supported manga files, not unrelated content.
+                        raw.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }
+                    }
+                    filtered.sortedBy { it.name.lowercase(Locale.ROOT) }
                 }
             }
             if (requestedPath == currentPath) {
@@ -126,19 +143,37 @@ private fun MangaFileManager() {
         if (batch.isNotEmpty()) {
             isRenaming = true
             val outcome = withContext(Dispatchers.IO) {
+                val staged = mutableListOf<Triple<File, File, File>>()
+                val completed = mutableListOf<Triple<File, File, File>>()
                 val failed = mutableListOf<String>()
-                var succeeded = 0
-                batch.forEach { (source, newName) ->
-                    val target = File(source.parentFile, newName)
-                    try {
-                        if (!source.exists()) failed.add("${source.name}: فایل مبدأ پیدا نشد")
-                        else if (target.exists()) failed.add("${source.name}: نام مقصد از قبل وجود دارد")
-                        else { Files.move(source.toPath(), target.toPath()); succeeded++ }
-                    } catch (e: Exception) {
-                        failed.add("${source.name}: ${e.localizedMessage ?: e.javaClass.simpleName}")
+                try {
+                    // Phase 1: move every source to a unique temporary name.
+                    batch.forEach { (source, newName) ->
+                        val target = File(source.parentFile, newName)
+                        val temp = File(source.parentFile, ".manga-renamer-${UUID.randomUUID()}.tmp")
+                        if (!source.exists()) throw IllegalStateException("فایل مبدأ پیدا نشد: ${source.name}")
+                        if (target.exists() && batch.none { it.first.absolutePath == target.absolutePath }) {
+                            throw IllegalStateException("نام مقصد موجود است: ${target.name}")
+                        }
+                        Files.move(source.toPath(), temp.toPath())
+                        staged.add(Triple(source, temp, target))
+                    }
+                    // Phase 2: move all staged files to their final names.
+                    staged.forEach { (source, temp, target) ->
+                        Files.move(temp.toPath(), target.toPath())
+                        completed.add(Triple(source, temp, target))
+                    }
+                } catch (e: Exception) {
+                    failed.add(e.localizedMessage ?: e.javaClass.simpleName)
+                    // Roll back finished destinations first, then unfinished temp files.
+                    completed.asReversed().forEach { (source, _, target) ->
+                        runCatching { if (target.exists() && !source.exists()) Files.move(target.toPath(), source.toPath()) }
+                    }
+                    staged.asReversed().filter { item -> completed.none { it.second == item.second } }.forEach { (source, temp, _) ->
+                        runCatching { if (temp.exists() && !source.exists()) Files.move(temp.toPath(), source.toPath()) }
                     }
                 }
-                succeeded to failed
+                (if (failed.isEmpty()) completed.size else 0) to failed
             }
             status = if (outcome.second.isEmpty()) "انجام شد: ${outcome.first} فایل تغییر نام یافت."
                 else "موفق: ${outcome.first} | ناموفق: ${outcome.second.size} — ${outcome.second.take(2).joinToString("؛ ")}"
@@ -150,7 +185,7 @@ private fun MangaFileManager() {
 
     // Selection may include any file; only supported manga files are renamed.
     val eligible = entries.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }
-    val selectedFiles = selected.mapNotNull { path -> entries.firstOrNull { it.absolutePath == path } }
+    val selectedFiles = entries.filter { it.absolutePath in selected }
     val renameCandidates = selectedFiles.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }
     val skippedSelectionCount = selectedFiles.size - renameCandidates.size
     val renameRows = renameCandidates.mapIndexed { index, file ->
@@ -199,10 +234,15 @@ private fun MangaFileManager() {
                     Text("${selectedFiles.count { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }} مورد واجد شرایط تغییر نام", color = TextMuted, fontSize = 11.sp)
                 }
                 TextButton(onClick = {
-                    val allFiles = entries.filter { it.isFile }.map { it.absolutePath }
-                    if (allFiles.isNotEmpty() && allFiles.all { it in selected }) selected.clear()
-                    else { selected.clear(); selected.addAll(allFiles) }
-                }) { Text("انتخاب همه", color = Accent) }
+                    // Select only files that the rename engine supports.
+                    val eligiblePaths = eligible.map { it.absolutePath }
+                    if (eligiblePaths.isNotEmpty() && eligiblePaths.all { it in selected }) {
+                        selected.clear()
+                    } else {
+                        selected.clear()
+                        selected.addAll(eligiblePaths)
+                    }
+                }, enabled = eligible.isNotEmpty()) { Text("انتخاب همه", color = Accent) }
                 Button(onClick = { seriesName = ""; renameOpen = true }, enabled = selected.isNotEmpty(), colors = ButtonDefaults.buttonColors(containerColor = AccentBlue), shape = RoundedCornerShape(12.dp)) {
                     Icon(Icons.Default.DriveFileRenameOutline, null); Spacer(Modifier.width(5.dp)); Text("تغییر نام")
                 }
@@ -234,7 +274,11 @@ private fun MangaFileManager() {
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (isSelected) Color(0xFF182B3B) else Bg).clickable {
                         if (file.isDirectory) { currentPath = file.absolutePath; selected.clear() }
                     }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(isSelected, { checked -> if (checked) selected.add(file.absolutePath) else selected.remove(file.absolutePath) })
+                        if (canRename) {
+                            Checkbox(isSelected, { checked -> if (checked) selected.add(file.absolutePath) else selected.remove(file.absolutePath) })
+                        } else {
+                            Spacer(Modifier.width(48.dp))
+                        }
                         Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(if (file.isDirectory) Color(0xFF49351D) else SurfaceRaised), contentAlignment = Alignment.Center) {
                             Icon(if (file.isDirectory) Icons.Default.Folder else Icons.Default.Description, null, tint = if (file.isDirectory) Accent else AccentBlue, modifier = Modifier.size(28.dp))
                         }
@@ -268,15 +312,21 @@ private fun MangaFileManager() {
             if (seriesName.isBlank()) { status = "نام مانگا را وارد کن."; return@Button }
             if (seriesName.any { it in "\\\\/:*?<>|\"" }) { status = "نام واردشده دارای نویسه غیرمجاز است."; return@Button }
             val targets = renameRows.map { it.second.lowercase(Locale.ROOT) }
-            val existing = entries.map { it.name.lowercase(Locale.ROOT) }.toSet()
-            if (targets.size != targets.distinct().size || renameRows.any { it.second.lowercase(Locale.ROOT) in existing && it.second != it.first.name }) {
-                status = "نام تکراری وجود دارد؛ عملیات لغو شد."
+            val movingSources = renameRows.map { it.first.absoluteFile.normalize().path }.toSet()
+            val externalConflicts = renameRows.filter { (source, newName) ->
+                val target = File(source.parentFile, newName).absoluteFile.normalize().path
+                File(target).exists() && target !in movingSources
+            }
+            if (targets.size != targets.distinct().size || externalConflicts.isNotEmpty()) {
+                status = if (targets.size != targets.distinct().size) "چند فایل نام مقصد یکسان دارند؛ الگوی نام را اصلاح کن."
+                    else "نام مقصد بعضی فایل‌ها با یک فایل خارج از انتخاب تداخل دارد."
                 return@Button
             }
             if (isRenaming || pendingRename.isNotEmpty()) return@Button
-            pendingRename = renameRows.toList()
+            pendingRename = renameRows.filter { (source, newName) -> source.name != newName }
+            if (pendingRename.isEmpty()) { status = "هیچ فایلی نیاز به تغییر نام ندارد."; return@Button }
             renameOpen = false
-            status = "در حال تغییر نام ${renameRows.size} فایل…"
+            status = "در حال تغییر نام ${pendingRename.size} فایل…"
         }, enabled = renameRows.isNotEmpty() && seriesName.isNotBlank() && !isRenaming, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) { Text(if (isRenaming) "در حال اجرا…" else "اعمال تغییرات") } },
         dismissButton = { TextButton(onClick = { renameOpen = false }) { Text("انصراف") } }
     )
