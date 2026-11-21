@@ -106,25 +106,9 @@ private fun MangaFileManager() {
                     if (!directory.exists() || !directory.isDirectory || !directory.canRead()) {
                         throw SecurityException("دسترسی خواندن این پوشه وجود ندارد")
                     }
-                    val raw = directory.listFiles()
-                        ?: throw IllegalStateException("خواندن فهرست پوشه ناموفق بود")
-                    val isLibraryRoot = directory.absoluteFile.normalize() == File(Environment.getExternalStorageDirectory().absolutePath).absoluteFile.normalize()
-                    val filtered = if (isLibraryRoot) {
-                        // Library root: show only folders that directly contain manga files.
-                        raw.asSequence()
-                            .filter { it.isDirectory && it.canRead() }
-                            .filter { bookFolder ->
-                                runCatching {
-                                    bookFolder.listFiles()?.any { child ->
-                                        child.isFile && child.extension.lowercase(Locale.ROOT) in MangaExtensions
-                                    } == true
-                                }.getOrDefault(false)
-                            }.toList()
-                    } else {
-                        // Inside a book folder: show only supported manga files, not unrelated content.
-                        raw.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }
-                    }
-                    filtered.sortedBy { it.name.lowercase(Locale.ROOT) }
+                    directory.listFiles()?.sortedWith(
+                        compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.ROOT) })
+                    ) ?: throw IllegalStateException("خواندن فهرست پوشه ناموفق بود")
                 }
             }
             if (requestedPath == currentPath) {
