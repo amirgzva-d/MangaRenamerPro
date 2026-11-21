@@ -68,7 +68,7 @@ private data class RenamePreview(
 private fun MangaRenamerApp() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("manga_renamer", Context.MODE_PRIVATE) }
-    var rootUri by remember { mutableStateOf(prefs.getString("tree_uri", null)?.let(Uri::parse)) }
+    var rootUri by remember { mutableStateOf(prefs.getString("tree_uri", null)?.let { Uri.parse(it) }) }
     var currentUri by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
     var tab by remember { mutableIntStateOf(0) }
@@ -89,7 +89,7 @@ private fun MangaRenamerApp() {
     var readerPages by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
     var readerIndex by remember { mutableIntStateOf(0) }
     var readerTitle by remember { mutableStateOf("") }
-    var audioUri by remember { mutableStateOf(prefs.getString("audio_uri", null)?.let(Uri::parse)) }
+    var audioUri by remember { mutableStateOf(prefs.getString("audio_uri", null)?.let { Uri.parse(it) }) }
     var musicOn by remember { mutableStateOf(false) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
 
@@ -118,7 +118,7 @@ private fun MangaRenamerApp() {
     }
 
     val currentFolder = remember(rootUri, currentUri, refresh) {
-        val uri = currentUri?.let(Uri::parse) ?: rootUri
+        val uri = currentUri?.let { Uri.parse(it) } ?: rootUri
         uri?.let { DocumentFile.fromTreeUri(context, it) }
     }
     val allFiles = remember(currentFolder, refresh) {
@@ -221,7 +221,7 @@ private fun MangaRenamerApp() {
                             onFavoritesOnly = { favoritesOnly = it },
                             onColumns = { columns = it; prefs.edit().putInt("columns", it).apply() },
                             onContinue = {
-                                val parent = lastParent?.let(Uri::parse)?.let { DocumentFile.fromTreeUri(context, it) }
+                                val parent = lastParent?.let { Uri.parse(it) }?.let { DocumentFile.fromTreeUri(context, it) }
                                 val pages = parent?.listFiles()?.filter { it.isFile && (it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT).orEmpty() in ImageExt) }
                                     ?.sortedBy { it.name?.lowercase(Locale.ROOT) } ?: emptyList()
                                 if (pages.isNotEmpty()) {
