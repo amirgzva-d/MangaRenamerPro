@@ -1,5 +1,53 @@
 # Manga Renamer Pro
 
-A Windows desktop utility for safely previewing and batch-renaming manga chapter files and folders.
+**ابزار ویندوزی تغییر نام تکی و گروهی فایل‌های مانگا** با رابط فارسی، پیش‌نمایش و نصب آسان.
 
-The project is being initialized. See the source and build instructions as they are added.
+## امکانات نسخه اولیه
+
+- انتخاب پوشه و نمایش فایل‌ها؛ امکان جست‌وجو در زیرپوشه‌ها
+- مرتب‌سازی طبیعی شماره‌ها (مثلاً 2 قبل از 10)
+- دو روش نام‌گذاری گروهی:
+  - **شماره‌گذاری خودکار:** پیشوند، شماره شروع و تعداد رقم قابل تنظیم
+  - **الگوی دلخواه:** متغیرهای `{n}`، `{old}` و `{chapter}`
+- تغییر نام تکی: نام جدید را در ستون دوم همان فایل ویرایش و ردیف را انتخاب کنید
+- حفظ پسوند اصلی فایل
+- بررسی نام نامعتبر، مقصد موجود و نام‌های تکراری پیش از اجرا
+- مرحله موقت برای کاهش خطر برخورد نام‌ها و تلاش برای بازگردانی در صورت بروز خطا
+- رابط فارسی و راست‌چین
+- فایل نصب مستقل از نصب بودن .NET Runtime
+
+## نصب آسان
+
+1. در GitHub وارد بخش **Actions** مخزن شوید.
+2. آخرین اجرای موفق **Build Windows Installer** را باز کنید.
+3. از بخش Artifacts فایل `MangaRenamerPro-Windows-Setup` را دریافت کنید.
+4. فایل ZIP را استخراج و `MangaRenamerPro-Setup-1.0.0.exe` را اجرا کنید.
+
+با ساخت تگ نسخه‌ای مانند `v1.0.0`، GitHub Actions علاوه بر Artifact، یک GitHub Release نیز منتشر می‌کند.
+
+## اجرای توسعه‌دهنده
+
+نیازمند Windows و .NET 8 SDK:
+
+```powershell
+dotnet run --project src/MangaRenamerPro/MangaRenamerPro.csproj
+```
+
+ساخت نسخه مستقل:
+
+```powershell
+dotnet publish src/MangaRenamerPro/MangaRenamerPro.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+```
+
+برای ساخت Setup از Inno Setup 6 استفاده می‌شود.
+
+## نکات مهم
+
+- برنامه فقط نام فایل‌ها را تغییر می‌دهد؛ محتوای فایل‌ها را بازنویسی نمی‌کند.
+- پیش از اجرای گروهی، پیش‌نمایش و مقصدها را بررسی کنید.
+- پیشنهاد می‌شود برای مجموعه‌های مهم، یک نسخه پشتیبان داشته باشید.
+- این نسخه برای ویندوز 64 بیتی ساخته می‌شود.
+
+## وضعیت توسعه
+
+نسخه اولیه، هسته تغییر نام و فرایند ساخت نصب‌کننده را فراهم می‌کند. امکانات پیشرفته‌تر مانند پروفایل‌های نام‌گذاری، Undo دائمی، فیلتر پسوندها و پشتیبانی ویژه از آرشیوها در مراحل بعدی اضافه می‌شوند.
