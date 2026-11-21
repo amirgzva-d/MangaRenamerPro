@@ -140,7 +140,7 @@ public partial class MainWindow : Window
                 continue;
             }
             var target = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(row.FullPath)!, row.NewName));
-            if (string.Equals(target, Path.GetFullPath(row.FullPath), StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(target, Path.GetFullPath(row.FullPath), StringComparison.Ordinal))
             {
                 row.Status = "بدون تغییر";
                 continue;
