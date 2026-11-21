@@ -8,6 +8,15 @@ android {
     namespace = "com.amirgzva.mangarenamerpro"
     compileSdk = 35
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
     defaultConfig {
         applicationId = "com.amirgzva.mangarenamerpro"
         minSdk = 26
