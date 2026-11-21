@@ -167,10 +167,20 @@ private fun MangaFileManager() {
         }
     }
 
-    // Selection may include any file; only supported manga files are renamed.
-    val eligible = entries.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }
-    val selectedFiles = entries.filter { it.absolutePath in selected }
-    val renameCandidates = selectedFiles.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }
+    // Eligibility is checked in one place so select-all, individual selection and rename use identical rules.
+    fun canRename(file: File): Boolean =
+        file.exists() && file.isFile &&
+            file.extension.lowercase(Locale.ROOT) in MangaExtensions &&
+            file.parentFile?.let { it.exists() && it.isDirectory && it.canWrite() } == true
+
+    val eligible = entries.filter(::canRename)
+    // Drop stale/ineligible selections automatically after refresh or filesystem changes.
+    LaunchedEffect(entries) {
+        val eligiblePaths = eligible.map { it.absolutePath }.toSet()
+        selected.removeAll { it !in eligiblePaths }
+    }
+    val selectedFiles = entries.filter { it.absolutePath in selected && canRename(it) }
+    val renameCandidates = selectedFiles
     val skippedSelectionCount = selectedFiles.size - renameCandidates.size
     val renameRows = renameCandidates.mapIndexed { index, file ->
         val ext = file.extension
@@ -214,20 +224,18 @@ private fun MangaFileManager() {
         bottomBar = {
             if (hasAccess) CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) { Row(Modifier.fillMaxWidth().background(SurfaceDark).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Start) {
                 Column(Modifier.weight(1f)) {
-                    Text("${selected.size} مورد انتخاب‌شده", color = TextMain, fontWeight = FontWeight.SemiBold)
+                    Text("${selectedFiles.size} مورد انتخاب‌شده", color = TextMain, fontWeight = FontWeight.SemiBold)
                     Text("${selectedFiles.count { it.isFile && it.extension.lowercase(Locale.ROOT) in MangaExtensions }} مورد واجد شرایط تغییر نام", color = TextMuted, fontSize = 11.sp)
                 }
                 TextButton(onClick = {
-                    // Select only files that the rename engine supports.
+                    // Replace the entire selection with eligible files only; never retain invalid items.
                     val eligiblePaths = eligible.map { it.absolutePath }
-                    if (eligiblePaths.isNotEmpty() && eligiblePaths.all { it in selected }) {
-                        selected.clear()
-                    } else {
-                        selected.clear()
-                        selected.addAll(eligiblePaths)
-                    }
+                    val allAlreadySelected = eligiblePaths.isNotEmpty() && eligiblePaths.all { it in selected } &&
+                        selected.all { it in eligiblePaths }
+                    selected.clear()
+                    if (eligiblePaths.isNotEmpty() && !allAlreadySelected) selected.addAll(eligiblePaths)
                 }, enabled = eligible.isNotEmpty()) { Text("انتخاب همه", color = Accent) }
-                Button(onClick = { seriesName = ""; renameOpen = true }, enabled = selected.isNotEmpty(), colors = ButtonDefaults.buttonColors(containerColor = AccentBlue), shape = RoundedCornerShape(12.dp)) {
+                Button(onClick = { seriesName = ""; renameOpen = true }, enabled = renameCandidates.isNotEmpty() && !isRenaming, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue), shape = RoundedCornerShape(12.dp)) {
                     Icon(Icons.Default.DriveFileRenameOutline, null); Spacer(Modifier.width(5.dp)); Text("تغییر نام")
                 }
             } }
@@ -253,7 +261,7 @@ private fun MangaFileManager() {
             entries.isEmpty() -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text(if (status.isBlank()) "این پوشه خالی است" else status, color = TextMuted) }
             else -> LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 items(entries, key = { it.absolutePath }) { file ->
-                    val canRename = file.isFile && file.extension.lowercase(Locale.ROOT) in MangaExtensions
+                    val canRename = canRename(file)
                     val isSelected = file.absolutePath in selected
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (isSelected) Color(0xFF182B3B) else Bg).clickable {
                         if (file.isDirectory) { currentPath = file.absolutePath; selected.clear() }
