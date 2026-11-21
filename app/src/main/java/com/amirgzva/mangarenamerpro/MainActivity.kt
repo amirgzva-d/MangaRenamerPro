@@ -70,6 +70,7 @@ private fun MangaRenamerApp() {
     val prefs = remember { context.getSharedPreferences("manga_renamer", Context.MODE_PRIVATE) }
     var rootUri by remember { mutableStateOf(prefs.getString("tree_uri", null)?.let { Uri.parse(it) }) }
     var currentUri by remember { mutableStateOf<String?>(null) }
+    var currentFolderOverride by remember { mutableStateOf<DocumentFile?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
     var tab by remember { mutableIntStateOf(0) }
     var columns by remember { mutableIntStateOf(prefs.getInt("columns", 2).coerceIn(1, 4)) }
@@ -100,6 +101,7 @@ private fun MangaRenamerApp() {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 rootUri = uri
                 currentUri = null
+                currentFolderOverride = null
                 prefs.edit().putString("tree_uri", uri.toString()).apply()
                 refresh++
                 status = "پوشه با موفقیت اضافه شد."
@@ -117,10 +119,11 @@ private fun MangaRenamerApp() {
         }
     }
 
-    val currentFolder = remember(rootUri, currentUri, refresh) {
-        val uri = currentUri?.let { Uri.parse(it) } ?: rootUri
-        uri?.let { DocumentFile.fromTreeUri(context, it) }
+    val rootFolder = remember(rootUri) {
+        rootUri?.let { DocumentFile.fromTreeUri(context, it) }
     }
+    // Keep the actual DocumentFile for nested folders. A child document URI is not a tree URI.
+    val currentFolder = currentFolderOverride ?: rootFolder
     val allFiles = remember(currentFolder, refresh) {
         currentFolder?.listFiles()?.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name ?: "" }) ?: emptyList()
     }
@@ -211,8 +214,8 @@ private fun MangaRenamerApp() {
                             showHidden = showHidden, favoritesOnly = favoritesOnly,
                             columns = columns, lastRead = lastRead,
                             onPickFolder = { folderPicker.launch(rootUri) },
-                            onOpenFolder = { currentUri = it.uri.toString(); favoritesOnly = false; refresh++ },
-                            onBack = { currentUri = null; favoritesOnly = false; refresh++ },
+                            onOpenFolder = { currentFolderOverride = it; currentUri = it.uri.toString(); favoritesOnly = false; refresh++ },
+                            onBack = { currentFolderOverride = null; currentUri = null; favoritesOnly = false; refresh++ },
                             onOpen = ::openReader,
                             onFavorite = { toggleValue(favorites, it, "favorites") },
                             onHide = { toggleValue(hidden, it, "hidden"); refresh++ },
