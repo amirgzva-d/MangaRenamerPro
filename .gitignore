@@ -1,8 +1,7 @@
-bin/
-obj/
-.vs/
-.vscode/
-publish/
-artifacts/
-*.user
-*.suo
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
