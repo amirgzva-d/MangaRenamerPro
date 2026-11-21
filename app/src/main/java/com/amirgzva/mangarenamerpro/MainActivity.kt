@@ -164,6 +164,7 @@ private fun MangaFileManager() {
                     Text("${shown.size} مورد", color = Accent, fontSize = 12.sp)
                 }
                 HorizontalDivider(color = Color(0xFF252832))
+                if (status.isNotBlank()) Text(status, color = Accent, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         },
         bottomBar = {
@@ -255,10 +256,6 @@ private fun MangaFileManager() {
                 }
             }
         }
-        if (status.isNotBlank()) SnackbarHost(
-            hostState = remember { SnackbarHostState() },
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
     }
 
     if (renameOpen) {
