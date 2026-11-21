@@ -476,7 +476,17 @@ private fun RenameScreen(
                             if (item.warning.startsWith("نیاز")) {
                                 OutlinedTextField(
                                     value = manualNumbers[item.uri].orEmpty(),
-                                    onValueChange = { onManualNumbers(manualNumbers + (item.uri to it)) },
+                                    onValueChange = { typed ->
+                                        onManualNumbers(manualNumbers + (item.uri to typed))
+                                        val clean = typed.trim()
+                                        if (clean.isNotEmpty() && clean.all(Char::isDigit)) {
+                                            val ext = item.oldName.substringAfterLast('.', "").let { if (it.isNotBlank()) ".$it" else "" }
+                                            val label = if (mode == 0) prefix else if (fixedEnabled) fixedText else ""
+                                            onPreview(preview.map { row ->
+                                                if (row.uri == item.uri) row.copy(newName = label + clean + ext, warning = "") else row
+                                            })
+                                        }
+                                    },
                                     label = { Text("شماره فصل برای این فایل") },
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     singleLine = true, modifier = Modifier.fillMaxWidth()
