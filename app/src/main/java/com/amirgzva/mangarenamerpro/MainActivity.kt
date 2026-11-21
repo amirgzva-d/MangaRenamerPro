@@ -41,6 +41,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 private val Bg = Color(0xFF08090D)
@@ -89,7 +92,7 @@ private fun MangaFileManager() {
             val result = withContext(Dispatchers.IO) { batch.count { (file, newName) -> runCatching { file.renameTo(File(file.parentFile, newName)) }.getOrDefault(false) } }
             status = "تغییر نام موفق: $result از ${batch.size} فایل"
             pendingRename = emptyList()
-            refreshKey++
+            refresh++
         }
     }
     val lifecycleOwner = LocalLifecycleOwner.current
