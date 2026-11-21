@@ -143,7 +143,7 @@ private fun MangaRenamerApp() {
         val ext = doc.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT).orEmpty()
         if (ext in ImageExt) {
             val parent = doc.parentFile ?: currentFolder
-            val pages = parent?.listFiles()?.filter { it.isFile && (it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT) in ImageExt) }
+            val pages = parent?.listFiles()?.filter { it.isFile && (it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT).orEmpty() in ImageExt) }
                 ?.sortedBy { it.name?.lowercase(Locale.ROOT) } ?: listOf(doc)
             readerPages = pages
             readerIndex = pages.indexOfFirst { it.uri == doc.uri }.coerceAtLeast(0)
@@ -222,7 +222,7 @@ private fun MangaRenamerApp() {
                             onColumns = { columns = it; prefs.edit().putInt("columns", it).apply() },
                             onContinue = {
                                 val parent = lastParent?.let(Uri::parse)?.let { DocumentFile.fromTreeUri(context, it) }
-                                val pages = parent?.listFiles()?.filter { it.isFile && (it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT) in ImageExt) }
+                                val pages = parent?.listFiles()?.filter { it.isFile && (it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT).orEmpty() in ImageExt) }
                                     ?.sortedBy { it.name?.lowercase(Locale.ROOT) } ?: emptyList()
                                 if (pages.isNotEmpty()) {
                                     readerPages = pages
@@ -377,7 +377,7 @@ private fun MangaCard(
     val ext = doc.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT).orEmpty()
     val cover = remember(doc.uri) {
         if (doc.isDirectory) doc.listFiles().firstOrNull {
-            it.isFile && it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT) in ImageExt
+            it.isFile && it.name?.substringAfterLast('.', "")?.lowercase(Locale.ROOT).orEmpty() in ImageExt
         }?.uri else if (ext in ImageExt) doc.uri else null
     }
     Card(
