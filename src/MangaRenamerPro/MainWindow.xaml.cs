@@ -5,7 +5,6 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
-using Forms = System.Windows.Forms;
 
 namespace MangaRenamerPro;
 
@@ -25,14 +24,13 @@ public partial class MainWindow : Window
 
     private void ChooseFolder_Click(object sender, RoutedEventArgs e)
     {
-        using var dialog = new Forms.FolderBrowserDialog
+        var dialog = new Microsoft.Win32.OpenFolderDialog
         {
-            Description = "پوشه حاوی فایل‌های مانگا را انتخاب کنید",
-            UseDescriptionForTitle = true,
-            ShowNewFolderButton = false
+            Title = "پوشه حاوی فایل‌های مانگا را انتخاب کنید",
+            Multiselect = false
         };
-        if (dialog.ShowDialog() != Forms.DialogResult.OK) return;
-        _folder = dialog.SelectedPath;
+        if (dialog.ShowDialog(this) != true) return;
+        _folder = dialog.FolderName;
         FolderPathText.Text = _folder;
         LoadFiles();
     }
@@ -122,7 +120,7 @@ public partial class MainWindow : Window
         if (!match.Success)
         {
             var matches = Regex.Matches(name, @"\\d+(?:[.]\\d+)?");
-            if (matches.Count > 0) match = matches[^1];
+            if (matches.Count > 0) match = matches[matches.Count - 1];
         }
         return match.Success ? match.Groups.Count > 1 ? match.Groups[1].Value : match.Value : "0";
     }
