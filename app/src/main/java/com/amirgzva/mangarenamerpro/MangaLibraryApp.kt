@@ -20,6 +20,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -67,6 +68,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
@@ -514,7 +516,7 @@ fun MangaLibraryApp() {
     }
 
     if (readerFile != null) {
-        PdfReaderScreen(file = readerFile!!, accent = accent, onBack = { readerFile = null; refreshKey++ })
+        MangaReaderScreen(file = readerFile!!, accent = accent, onBack = { readerFile = null; refreshKey++ })
     } else if (showFileManager) {
         MangaFileManager(
             onExit = { showFileManager = false; refreshKey++ },
@@ -939,7 +941,7 @@ private fun MangaDetailScreen(
                     )
                 }
                 Text(
-                    "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.totalPages)} صفحه PDF",
+                    "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.totalPages)} صفحه قابل مطالعه",
                     color = MangaMuted, fontSize = 12.sp
                 )
             }
@@ -1235,7 +1237,7 @@ private fun SettingsGroup(title: String, subtitle: String) {
 }
 
 @Composable
-private fun PdfReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
+private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
     val context = LocalContext.current
     var page by remember(file.absolutePath) { mutableIntStateOf(MangaStore.getProgress(context, file).page.coerceAtLeast(1)) }
     var total by remember(file.absolutePath) { mutableIntStateOf(MangaStore.getProgress(context, file).total.coerceAtLeast(1)) }
@@ -1284,7 +1286,24 @@ private fun PdfReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
             }
             Icon(Icons.Default.Bookmark, null, tint = accent, modifier = Modifier.padding(horizontal = 10.dp))
         }
-        Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF090909)), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.weight(1f).fillMaxWidth().background(Color(0xFF090909))
+                .pointerInput(page, total, initialized) {
+                    var dragDistance = 0f
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { change, amount ->
+                            dragDistance += amount
+                            change.consume()
+                        },
+                        onDragEnd = {
+                            if (initialized && dragDistance < -55f) page = (page + 1).coerceAtMost(total)
+                            else if (initialized && dragDistance > 55f) page = (page - 1).coerceAtLeast(1)
+                            dragDistance = 0f
+                        }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
             if (pageImage != null) {
                 Image(pageImage!!, contentDescription = "صفحه $page", modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 8.dp), contentScale = ContentScale.Fit)
             } else if (error.isNotBlank()) {
