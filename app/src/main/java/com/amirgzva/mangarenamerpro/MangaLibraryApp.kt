@@ -1614,11 +1614,11 @@ private fun MangaReaderPageItem(file: File, pageIndex: Int, targetWidth: Int) {
     val context = LocalContext.current
     var loaded by remember(file.absolutePath, pageIndex, file.length(), file.lastModified()) { mutableStateOf(false) }
     val image by produceState<ImageBitmap?>(
-        initialValue = null,
-        key1 = file.absolutePath,
-        key2 = pageIndex,
-        key3 = file.length(),
-        key4 = file.lastModified()
+        null,
+        file.absolutePath,
+        pageIndex,
+        file.length(),
+        file.lastModified()
     ) {
         value = withContext(Dispatchers.IO) {
             renderMangaPage(context, file, pageIndex, targetWidth)?.asImageBitmap()
