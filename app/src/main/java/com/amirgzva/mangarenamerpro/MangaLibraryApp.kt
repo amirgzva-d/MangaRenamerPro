@@ -93,8 +93,8 @@ private val MangaLine = Color(0xFF282828)
 private val LibraryExtensions = setOf("jpg", "jpeg", "png", "webp", "avif", "bmp", "gif", "pdf", "cbz", "cbr", "zip", "rar", "7z")
 private val ImageExtensions = setOf("jpg", "jpeg", "png", "webp", "avif", "bmp", "gif")
 
-private data class ReadingProgress(val page: Int, val total: Int, val updatedAt: Long)
-private data class RecentMangaFile(val file: File, val page: Int, val total: Int, val updatedAt: Long)
+internal data class ReadingProgress(val page: Int, val total: Int, val updatedAt: Long)
+internal data class RecentMangaFile(val file: File, val page: Int, val total: Int, val updatedAt: Long)
 private data class MangaFolderUi(
     val path: String,
     val title: String,
