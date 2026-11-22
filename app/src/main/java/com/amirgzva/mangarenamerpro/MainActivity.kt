@@ -394,10 +394,10 @@ private fun extractEpisodeNumber(stem: String, fallbackIndex: Int): String {
     val numberPattern = """[0-9۰-۹٠-٩]+(?:[._-][0-9۰-۹٠-٩]+)?"""
     // Explicitly match compact names such as Ch2.pdf and Ch3.pdf.
     val compactChapterNumber = Regex(
-        """(?i)^ch(?:apter)?[\\s._-]*($numberPattern)$"""
+        """(?i)^ch(?:apter)?[\s._-]*($numberPattern)$"""
     ).find(withoutCopySuffix)?.groupValues?.get(1)
     val chapterNumber = compactChapterNumber ?: Regex(
-        """(?i)(?:^|[^a-z])ch(?:apter)?[\\s._-]*($numberPattern)"""
+        """(?i)(?:^|[^a-z])ch(?:apter)?[\s._-]*($numberPattern)"""
     ).find(withoutCopySuffix)?.groupValues?.get(1)
 
     val rawNumber = chapterNumber
