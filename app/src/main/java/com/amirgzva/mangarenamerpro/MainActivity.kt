@@ -58,17 +58,17 @@ private val MangaExtensions = setOf("jpg", "jpeg", "png", "webp", "avif", "bmp",
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = android.graphics.Color.BLACK
+        window.navigationBarColor = android.graphics.Color.BLACK
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = AccentBlue, secondary = Accent, background = Bg, surface = SurfaceDark, onPrimary = Color.White, onSecondary = Bg, onBackground = TextMain, onSurface = TextMain)) {
-                MangaFileManager()
-            }
+            MangaLibraryApp()
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MangaFileManager() {
+internal fun MangaFileManager(onExit: () -> Unit = {}, onOpenPdf: (File) -> Unit = {}) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasAccess by remember { mutableStateOf(hasAllFilesAccess()) }
@@ -189,6 +189,7 @@ private fun MangaFileManager() {
                     }
                     if (error == null) {
                         succeeded++
+                        MangaStore.moveProgress(context, item.source.absolutePath, item.target.absolutePath)
                     } else {
                         errors.add("${item.source.name}: $error")
                         // Restore only this file and keep processing the rest of the batch.
@@ -267,7 +268,9 @@ private fun MangaFileManager() {
                             IconButton(onClick = {
                                 currentPath = File(currentPath).parent ?: Environment.getExternalStorageDirectory().absolutePath
                                 selected.clear()
-                            }) { Icon(Icons.Default.ArrowBack, "بازگشت", tint = TextMain) }
+                            }) { Icon(Icons.Default.ArrowBack, "بازگشت به پوشه قبل", tint = TextMain) }
+                        } else {
+                            IconButton(onClick = onExit) { Icon(Icons.Default.ArrowBack, "بازگشت به کتابخانه", tint = TextMain) }
                         }
                                     Column(Modifier.padding(start = 4.dp)) {
                             Text("MANGA FILE MANAGER", fontSize = 10.sp, color = Accent, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
@@ -323,7 +326,12 @@ private fun MangaFileManager() {
                     val canRename = canRename(file)
                     val isSelected = file.absolutePath in selected
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (isSelected) Color(0xFF182B3B) else Bg).clickable {
-                        if (file.isDirectory) { currentPath = file.absolutePath; selected.clear() }
+                        if (file.isDirectory) {
+                            currentPath = file.absolutePath
+                            selected.clear()
+                        } else if (file.extension.equals("pdf", true)) {
+                            onOpenPdf(file)
+                        }
                     }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (canRename) {
                             Checkbox(isSelected, { checked -> if (checked) selected.add(file.absolutePath) else selected.remove(file.absolutePath) })
