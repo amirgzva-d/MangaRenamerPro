@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
@@ -16,6 +17,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -54,6 +56,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LibraryBooks
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -282,10 +285,20 @@ private fun collectMangaFiles(folder: File): List<File> {
     }.getOrDefault(emptyList())
 }
 
+private data class PdfSliceSpec(
+    val sourcePage: Int,
+    val offsetY: Int,
+    val height: Int,
+    val scale: Float
+)
+
 private class PdfDocumentSession(private val file: File) : Closeable {
     private var descriptor: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
-    private val bitmapCache = object : LruCache<String, Bitmap>(48 * 1024 * 1024) {
+    private var sliceWidth = 0
+    private var sliceHeight = 0
+    private var sliceSpecs: List<PdfSliceSpec> = emptyList()
+    private val bitmapCache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
@@ -306,29 +319,77 @@ private class PdfDocumentSession(private val file: File) : Closeable {
         return renderer?.pageCount ?: 0
     }
 
+    /**
+     * Converts every PDF page into screen-sized vertical slices at native device width.
+     * Normal portrait pages remain a single slice. Very long webtoon pages become
+     * several full-width slices, so they are readable without zooming or scrolling
+     * inside the horizontal page-turn mode.
+     */
     @Synchronized
-    fun renderPage(pageIndex: Int, targetWidth: Int): Bitmap? {
-        val pageWidth = targetWidth.coerceIn(900, 2160)
-        val key = "$pageIndex:$pageWidth"
+    fun prepareSlices(targetWidth: Int, maxSliceHeight: Int): Int {
+        val width = targetWidth.coerceIn(900, 1920)
+        val height = maxSliceHeight.coerceIn(1000, 2200)
+        if (sliceWidth == width && sliceHeight == height && sliceSpecs.isNotEmpty()) {
+            return sliceSpecs.size
+        }
+
+        val pageCount = open()
+        val activeRenderer = renderer ?: return 0
+        val prepared = ArrayList<PdfSliceSpec>()
+        for (pageIndex in 0 until pageCount) {
+            var page: PdfRenderer.Page? = null
+            try {
+                val activePage = activeRenderer.openPage(pageIndex)
+                page = activePage
+                val scale = width.toFloat() / activePage.width.toFloat()
+                val renderedHeight = (activePage.height * scale).roundToInt().coerceAtLeast(1)
+                val sliceCount = ((renderedHeight + height - 1) / height).coerceAtLeast(1)
+                repeat(sliceCount) { sliceIndex ->
+                    val offset = sliceIndex * height
+                    val tileHeight = (renderedHeight - offset).coerceAtMost(height).coerceAtLeast(1)
+                    prepared += PdfSliceSpec(pageIndex, offset, tileHeight, scale)
+                }
+            } finally {
+                runCatching { page?.close() }
+            }
+        }
+
+        sliceWidth = width
+        sliceHeight = height
+        sliceSpecs = prepared
+        bitmapCache.evictAll()
+        return sliceSpecs.size
+    }
+
+    @Synchronized
+    fun hasScreenSlices(): Boolean =
+        sliceSpecs.size > (renderer?.pageCount ?: 0)
+
+    @Synchronized
+    fun renderSegment(segmentIndex: Int, targetWidth: Int): Bitmap? {
+        val spec = sliceSpecs.getOrNull(segmentIndex) ?: return null
+        val width = targetWidth.coerceIn(900, 1920).coerceAtMost(sliceWidth).coerceAtLeast(1)
+        val key = "$segmentIndex:$width:$sliceHeight"
         bitmapCache.get(key)?.let { return it }
+
         var page: PdfRenderer.Page? = null
         var bitmap: Bitmap? = null
         try {
-            val count = open()
             val activeRenderer = renderer ?: return null
-            if (count <= 0) return null
-            page = activeRenderer.openPage(pageIndex.coerceIn(0, count - 1))
+            val activePage = activeRenderer.openPage(spec.sourcePage)
+            page = activePage
+            bitmap = Bitmap.createBitmap(width, spec.height, Bitmap.Config.ARGB_8888)
 
-            val maxHeight = 6200f
-            val sourceWidth = page.width.toFloat()
-            val sourceHeight = page.height.toFloat()
-            val fitScale = minOf(pageWidth / sourceWidth, maxHeight / sourceHeight)
-            val pixelBudgetScale = kotlin.math.sqrt(12_000_000f / (sourceWidth * sourceHeight))
-            val scale = minOf(fitScale, pixelBudgetScale)
-            val width = (sourceWidth * scale).roundToInt().coerceIn(1, pageWidth)
-            val height = (sourceHeight * scale).roundToInt().coerceIn(1, 6200)
-            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            val transform = Matrix().apply {
+                setValues(
+                    floatArrayOf(
+                        spec.scale, 0f, 0f,
+                        0f, spec.scale, -spec.offsetY.toFloat(),
+                        0f, 0f, 1f
+                    )
+                )
+            }
+            activePage.render(bitmap, null, transform, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             bitmapCache.put(key, bitmap)
             return bitmap
         } catch (_: Exception) {
@@ -349,10 +410,47 @@ private class PdfDocumentSession(private val file: File) : Closeable {
         runCatching { descriptor?.close() }
         renderer = null
         descriptor = null
+        sliceSpecs = emptyList()
+        sliceWidth = 0
+        sliceHeight = 0
     }
 }
 
 private val PdfRendererLock = Any()
+
+private fun openPdfWithComicScreen(context: Context, file: File) {
+    if (!file.isFile || !file.exists()) {
+        Toast.makeText(context, "فایل PDF پیدا نشد.", Toast.LENGTH_SHORT).show()
+        return
+    }
+    runCatching {
+        val contentUri = FileProvider.getUriForFile(
+            context,
+            context.packageName + ".fileprovider",
+            file
+        )
+        val comicScreenIntent = Intent(Intent.ACTION_VIEW).apply {
+            setPackage("com.viewer.comicscreen")
+            setDataAndType(contentUri, "application/pdf")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            context.startActivity(comicScreenIntent)
+        } catch (_: Exception) {
+            val genericReaderIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(contentUri, "application/pdf")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(genericReaderIntent, "انتخاب برنامه نمایش PDF"))
+        }
+    }.onFailure { error ->
+        Toast.makeText(
+            context,
+            error.message ?: "باز کردن PDF در برنامه دیگر ناموفق بود.",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+}
 
 private fun pdfPageCount(file: File): Int {
     if (!file.isFile || !file.extension.equals("pdf", true)) return 0
@@ -463,6 +561,48 @@ private fun loadFolderUi(context: Context, folder: File): MangaFolderUi {
     )
 }
 
+private fun renderPdfCoverBitmap(file: File, targetWidth: Int, maxHeight: Int): Bitmap? {
+    if (!file.isFile || !file.extension.equals("pdf", true)) return null
+    return synchronized(PdfRendererLock) {
+        var descriptor: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        var page: PdfRenderer.Page? = null
+        var bitmap: Bitmap? = null
+        try {
+            descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val activeRenderer = PdfRenderer(descriptor)
+            renderer = activeRenderer
+            if (activeRenderer.pageCount <= 0) return@synchronized null
+            val activePage = activeRenderer.openPage(0)
+            page = activePage
+
+            // Render the top of a tall PDF page at full cover width rather than
+            // shrinking the entire webtoon strip into a tiny, blurry thumbnail.
+            val width = targetWidth.coerceIn(360, 900)
+            val heightLimit = maxHeight.coerceIn(480, 1400)
+            val scale = width.toFloat() / activePage.width.toFloat()
+            val fullHeight = (activePage.height * scale).roundToInt().coerceAtLeast(1)
+            val height = fullHeight.coerceAtMost(heightLimit)
+            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val matrix = Matrix().apply {
+                setValues(floatArrayOf(scale, 0f, 0f, 0f, scale, 0f, 0f, 0f, 1f))
+            }
+            activePage.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            bitmap
+        } catch (_: Exception) {
+            runCatching { bitmap?.recycle() }
+            null
+        } catch (_: OutOfMemoryError) {
+            runCatching { bitmap?.recycle() }
+            null
+        } finally {
+            runCatching { page?.close() }
+            runCatching { renderer?.close() }
+            runCatching { descriptor?.close() }
+        }
+    }
+}
+
 private fun loadCoverBitmap(context: Context, file: File): Bitmap? = runCatching {
     if (!file.exists() || !file.isFile) return@runCatching null
     val cache = File(
@@ -475,7 +615,7 @@ private fun loadCoverBitmap(context: Context, file: File): Bitmap? = runCatching
 
     val bitmap = when (file.extension.lowercase(Locale.ROOT)) {
         in ImageExtensions -> loadImagePage(file, maxWidth = 720, maxHeight = 960)
-        "pdf" -> renderPdfPageBitmap(file, 0, targetWidth = 520, maxHeight = 920)
+        "pdf" -> renderPdfCoverBitmap(file, targetWidth = 720, maxHeight = 1080)
         "cbz", "zip", "cbr", "rar", "7z" ->
             MangaArchivePages.pages(context, file).firstOrNull()?.let { loadImagePage(it, 720, 960) }
         else -> null
@@ -497,8 +637,8 @@ private fun renderMangaPage(
     pdfSession: PdfDocumentSession? = null
 ): Bitmap? {
     return when (file.extension.lowercase(Locale.ROOT)) {
-        "pdf" -> pdfSession?.renderPage(pageIndex, targetWidth)
-            ?: if (pdfSession == null) renderPdfPageBitmap(file, pageIndex, targetWidth, maxHeight = 6200) else null
+        "pdf" -> pdfSession?.renderSegment(pageIndex, targetWidth)
+            ?: if (pdfSession == null) renderPdfPageBitmap(file, pageIndex, targetWidth, maxHeight = 2200) else null
         "cbz", "zip", "cbr", "rar", "7z" ->
             MangaArchivePages.pages(context, file).getOrNull(pageIndex)?.let {
                 loadImagePage(it, maxWidth = 1400, maxHeight = 2200)
@@ -1028,19 +1168,19 @@ private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent:
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Black),
         border = BorderStroke(1.5.dp, Color(0xFF1D1D1D))
     ) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Column(Modifier.fillMaxWidth().padding(8.dp)) {
+            Column(Modifier.fillMaxWidth().padding(9.dp)) {
                 Box(
                     Modifier.fillMaxWidth()
                         .aspectRatio(0.75f)
-                        .clip(RoundedCornerShape(18.dp))
+                        .clip(RoundedCornerShape(20.dp))
                         .background(MangaPanelRaised)
                 ) {
-                    MangaCover(folder.cover, Modifier.fillMaxSize(), 18)
+                    MangaCover(folder.cover, Modifier.fillMaxSize(), 20)
                     if (folder.favorite) {
                         Surface(
                             color = Color(0xCC18120A),
@@ -1076,7 +1216,7 @@ private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent:
                 Spacer(Modifier.height(8.dp))
                 MangaProgressBar(
                     if (folder.totalPages > 0) folder.percent / 100f else 0f,
-                    height = 6
+                    height = 7
                 )
             }
         }
@@ -1553,16 +1693,21 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
     var verticalSeekTarget by remember(file.absolutePath) { mutableIntStateOf(-1) }
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
-    val pageRenderWidth = with(density) { (configuration.screenWidthDp * 1.5f).dp.roundToPx() }.coerceIn(900, 2160)
+    val pageRenderWidth = with(density) {
+        (configuration.screenWidthDp.dp.toPx() * 1.25f).roundToInt()
+    }.coerceIn(900, 1920)
+    val pageRenderHeight = with(density) {
+        (configuration.screenHeightDp.dp.toPx() * 0.72f).roundToInt()
+    }.coerceIn(1000, 2200)
     val listState = rememberLazyListState()
     BackHandler(onBack = onBack)
 
-    LaunchedEffect(file.absolutePath) {
+    LaunchedEffect(file.absolutePath, pageRenderWidth, pageRenderHeight) {
         val count = withContext(Dispatchers.IO) {
             runCatching {
                 if (!file.exists() || !file.isFile) return@runCatching 0
                 when (file.extension.lowercase(Locale.ROOT)) {
-                    "pdf" -> pdfSession?.open() ?: 0
+                    "pdf" -> pdfSession?.prepareSlices(pageRenderWidth, pageRenderHeight) ?: 0
                     "cbz", "zip", "cbr", "rar", "7z" -> MangaArchivePages.pages(context, file).size
                     in ImageExtensions -> 1
                     else -> 0
@@ -1579,7 +1724,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(file.absolutePath, page, initialized, readerMode, pageRenderWidth) {
+    LaunchedEffect(file.absolutePath, page, initialized, readerMode, pageRenderWidth, pageRenderHeight) {
         if (initialized && readerMode == "right") {
             val targetPage = page
             val rendered = withContext(Dispatchers.IO) {
@@ -1637,7 +1782,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
                     Text(file.name, color = MangaWhite, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        if (initialized) "صفحه ${formatPersianNumber(page)} از ${formatPersianNumber(total)}"
+                        if (initialized) "${if (pdfSession?.hasScreenSlices() == true) "بخش" else "صفحه"} ${formatPersianNumber(page)} از ${formatPersianNumber(total)}"
                         else "در حال آماده‌سازی…",
                         color = MangaMuted,
                         fontSize = 11.sp
@@ -1680,6 +1825,17 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                             },
                             leadingIcon = { Icon(Icons.Default.ViewList, null, tint = accent) }
                         )
+                        if (file.extension.equals("pdf", true)) {
+                            HorizontalDivider(color = MangaLine)
+                            DropdownMenuItem(
+                                text = { Text("باز کردن با ComicScreen") },
+                                onClick = {
+                                    modeMenuOpen = false
+                                    openPdfWithComicScreen(context, file)
+                                },
+                                leadingIcon = { Icon(Icons.Default.OpenInNew, null, tint = accent) }
+                            )
+                        }
                     }
                 }
             }
@@ -1696,14 +1852,15 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF090909)),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                    contentPadding = PaddingValues(0.dp),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
                     items(total, key = { it }) { index ->
                         MangaReaderPageItem(
                             file = file,
                             pageIndex = index,
                             targetWidth = pageRenderWidth,
+                            sliceHeightKey = pageRenderHeight,
                             pdfSession = pdfSession
                         )
                     }
@@ -1753,7 +1910,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                                 Image(
                                     shown.second,
                                     contentDescription = "صفحه ${shown.first}",
-                                    modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 8.dp),
+                                    modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Fit
                                 )
                             }
@@ -1825,7 +1982,13 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
 }
 
 @Composable
-private fun MangaReaderPageItem(file: File, pageIndex: Int, targetWidth: Int, pdfSession: PdfDocumentSession?) {
+private fun MangaReaderPageItem(
+    file: File,
+    pageIndex: Int,
+    targetWidth: Int,
+    sliceHeightKey: Int,
+    pdfSession: PdfDocumentSession?
+) {
     val context = LocalContext.current
     var loaded by remember(file.absolutePath, pageIndex, file.length(), file.lastModified()) { mutableStateOf(false) }
     val image by produceState<ImageBitmap?>(
@@ -1833,7 +1996,9 @@ private fun MangaReaderPageItem(file: File, pageIndex: Int, targetWidth: Int, pd
         file.absolutePath,
         pageIndex,
         file.length(),
-        file.lastModified()
+        file.lastModified(),
+        targetWidth,
+        sliceHeightKey
     ) {
         value = withContext(Dispatchers.IO) {
             runCatching {
