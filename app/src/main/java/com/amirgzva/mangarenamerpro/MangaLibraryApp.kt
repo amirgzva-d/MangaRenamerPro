@@ -1734,8 +1734,11 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                         AnimatedContent(
                             targetState = displayedPage,
                             transitionSpec = {
-                                val forward = targetState != null && initialState != null &&
-                                    targetState.first > initialState.first
+                                val previousPageState = initialState
+                                val nextPageState = targetState
+                                val forward = previousPageState?.let { previous ->
+                                    nextPageState?.let { next -> next.first > previous.first }
+                                } ?: true
                                 if (forward) {
                                     (slideInHorizontally(tween(240)) { it } + fadeIn(tween(180))) togetherWith
                                         (slideOutHorizontally(tween(240)) { -it } + fadeOut(tween(180)))
