@@ -933,7 +933,9 @@ private fun MangaDetailScreen(
 ) {
     val context = LocalContext.current
     val lastFile = folder.lastFile
-    val continueFile = lastFile ?: folder.files.firstOrNull { it.extension.equals("pdf", true) }
+    val continueFile = lastFile
+        ?: folder.files.firstOrNull { it.extension.equals("pdf", true) }
+        ?: folder.files.firstOrNull { it.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z") }
         ?: folder.files.firstOrNull { it.extension.lowercase(Locale.ROOT) in ImageExtensions }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
@@ -1093,6 +1095,7 @@ private fun MangaFileProgressRow(file: File, accent: Color, onClick: () -> Unit)
                 )
                 file.extension.equals("pdf", true) -> Text("هنوز خوانده‌نشده", color = MangaMuted, fontSize = 12.sp)
                 file.extension.lowercase(Locale.ROOT) in ImageExtensions -> Text("تصویر مانگا", color = MangaMuted, fontSize = 12.sp)
+                file.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z") -> Text("هنوز خوانده‌نشده · آرشیو کمیک", color = MangaMuted, fontSize = 12.sp)
                 else -> Text(file.extension.uppercase(Locale.ROOT) + " · برای مدیریت فایل", color = MangaMuted, fontSize = 12.sp)
             }
             MangaProgressBar(percent, height = 7)
