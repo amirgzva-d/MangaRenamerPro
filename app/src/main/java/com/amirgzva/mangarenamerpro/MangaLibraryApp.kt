@@ -27,6 +27,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -67,10 +68,13 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.*
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
@@ -98,6 +102,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.io.File
 import java.io.FileOutputStream
 import java.io.Closeable
@@ -771,8 +776,15 @@ fun MangaLibraryApp() {
     var recent by remember { mutableStateOf<List<RecentMangaFile>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
-    var columns by remember { mutableIntStateOf(2) }
-    var layout by remember { mutableStateOf("grid") }
+    var columns by remember {
+        mutableIntStateOf(MangaStore.settingInt(context, "columns", 2).coerceIn(1, 4))
+    }
+    var layout by remember {
+        mutableStateOf(
+            MangaStore.setting(context, "layout", "grid")
+                .takeIf { it in setOf("grid", "list", "compact") } ?: "grid"
+        )
+    }
     var showMetadata by remember { mutableStateOf(MangaStore.setting(context, "show_metadata", "true") != "false") }
     var accentName by remember { mutableStateOf(MangaStore.setting(context, "accent", "gold")) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -1116,16 +1128,40 @@ private fun LibraryHomeScreen(
                 }
             }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                gridItems(folders, key = { it.path }) { folder ->
-                    FolderGridCard(folder, showMetadata = true, accent = accent) {
-                        onOpenFolder(folder)
+            when (layout) {
+                "list" -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(folders, key = { it.path }) { folder ->
+                            FolderListCard(
+                                folder = folder,
+                                compact = false,
+                                showMetadata = showMetadata,
+                                accent = accent
+                            ) { onOpenFolder(folder) }
+                        }
+                    }
+                }
+                else -> {
+                    val actualColumns = columns.coerceIn(1, 4)
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(actualColumns),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (layout == "compact") 7.dp else 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (layout == "compact") 8.dp else 12.dp)
+                    ) {
+                        gridItems(folders, key = { it.path }) { folder ->
+                            FolderGridCard(
+                                folder = folder,
+                                showMetadata = showMetadata,
+                                accent = accent,
+                                compact = layout == "compact"
+                            ) { onOpenFolder(folder) }
+                        }
                     }
                 }
             }
@@ -1164,7 +1200,13 @@ private fun RecentReadingCard(item: RecentMangaFile, accent: Color, onClick: (Fi
 }
 
 @Composable
-private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent: Color, onClick: () -> Unit) {
+private fun FolderGridCard(
+    folder: MangaFolderUi,
+    showMetadata: Boolean,
+    accent: Color,
+    compact: Boolean = false,
+    onClick: () -> Unit
+) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -1173,14 +1215,14 @@ private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent:
         border = BorderStroke(1.5.dp, Color(0xFF1D1D1D))
     ) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Column(Modifier.fillMaxWidth().padding(9.dp)) {
+            Column(Modifier.fillMaxWidth().padding(if (compact) 6.dp else 9.dp)) {
                 Box(
                     Modifier.fillMaxWidth()
-                        .aspectRatio(0.75f)
-                        .clip(RoundedCornerShape(20.dp))
+                        .aspectRatio(if (compact) 0.92f else 0.75f)
+                        .clip(RoundedCornerShape(if (compact) 15.dp else 20.dp))
                         .background(MangaPanelRaised)
                 ) {
-                    MangaCover(folder.cover, Modifier.fillMaxSize(), 20)
+                    MangaCover(folder.cover, Modifier.fillMaxSize(), if (compact) 15 else 20)
                     if (folder.favorite) {
                         Surface(
                             color = Color(0xCC18120A),
@@ -1191,19 +1233,19 @@ private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent:
                         }
                     }
                 }
-                Spacer(Modifier.height(9.dp))
+                Spacer(Modifier.height(if (compact) 5.dp else 9.dp))
                 Text(
                     folder.title,
                     modifier = Modifier.fillMaxWidth(),
                     color = MangaWhite,
-                    fontSize = 18.sp,
+                    fontSize = if (compact) 14.sp else 18.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Left
                 )
                 if (showMetadata) {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(if (compact) 4.dp else 8.dp))
                     Text(
                         "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.percent)}٪",
                         modifier = Modifier.fillMaxWidth(),
@@ -1216,7 +1258,7 @@ private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent:
                 Spacer(Modifier.height(8.dp))
                 MangaProgressBar(
                     if (folder.totalPages > 0) folder.percent / 100f else 0f,
-                    height = 7
+                    height = if (compact) 5 else 7
                 )
             }
         }
@@ -1567,18 +1609,52 @@ private fun SettingsScreen(
         }
     }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        SettingsGroup("چیدمان کتابخانه", "نمایش جلدها به‌صورت شبکه‌ای دو ستونه، مطابق طرح اصلی کتابخانه.")
-        Surface(
+        SettingsGroup("چیدمان کتابخانه", "تعداد ستون‌ها و شکل نمایش جلدها را انتخاب کن؛ تغییرات بلافاصله در کتابخانه اعمال و ذخیره می‌شوند.")
+        Text("تعداد ستون‌ها", color = MangaWhite, fontWeight = FontWeight.SemiBold)
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            color = MangaPanel,
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, MangaLine)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.GridView, null, tint = MangaGold)
-                Spacer(Modifier.width(10.dp))
-                Text("شبکه‌ای · دو ستون · جلد بزرگ", color = MangaWhite, fontWeight = FontWeight.SemiBold)
+            (1..4).forEach { count ->
+                FilterChip(
+                    selected = columns == count,
+                    onClick = { onColumnsChange(count) },
+                    label = { Text("$count") },
+                    modifier = Modifier.weight(1f),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MangaGold,
+                        selectedLabelColor = MangaBlack,
+                        labelColor = MangaWhite
+                    )
+                )
             }
+        }
+        Text("نوع چیدمان", color = MangaWhite, fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = layout == "grid",
+                onClick = { onLayoutChange("grid") },
+                label = { Icon(Icons.Default.GridView, null); Spacer(Modifier.width(5.dp)); Text("شبکه‌ای") },
+                modifier = Modifier.weight(1f),
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MangaGold, selectedLabelColor = MangaBlack)
+            )
+            FilterChip(
+                selected = layout == "list",
+                onClick = { onLayoutChange("list") },
+                label = { Icon(Icons.Default.ViewList, null); Spacer(Modifier.width(5.dp)); Text("فهرستی") },
+                modifier = Modifier.weight(1f),
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MangaGold, selectedLabelColor = MangaBlack)
+            )
+            FilterChip(
+                selected = layout == "compact",
+                onClick = { onLayoutChange("compact") },
+                label = { Text("فشرده") },
+                modifier = Modifier.weight(1f),
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MangaGold, selectedLabelColor = MangaBlack)
+            )
         }
         HorizontalDivider(color = MangaLine)
         SettingsGroup("اطلاعات کارت‌ها", "نمایش تعداد فایل‌ها و درصد پیشرفت زیر هر جلد.")
@@ -1690,6 +1766,8 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
         )
     }
     var modeMenuOpen by remember { mutableStateOf(false) }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var controlsPulse by remember { mutableIntStateOf(0) }
     var verticalSeekTarget by remember(file.absolutePath) { mutableIntStateOf(-1) }
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
@@ -1701,6 +1779,21 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
     }.coerceIn(1000, 2200)
     val listState = rememberLazyListState()
     BackHandler(onBack = onBack)
+
+    // On entry, show the chrome briefly. A tap reveals it again for exactly one second.
+    LaunchedEffect(initialized) {
+        if (initialized) {
+            controlsVisible = true
+            controlsPulse++
+        }
+    }
+
+    LaunchedEffect(controlsPulse, controlsVisible, modeMenuOpen, initialized) {
+        if (controlsVisible && initialized && !modeMenuOpen) {
+            delay(1000)
+            controlsVisible = false
+        }
+    }
 
     LaunchedEffect(file.absolutePath, pageRenderWidth, pageRenderHeight) {
         val count = withContext(Dispatchers.IO) {
@@ -1734,8 +1827,6 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                 displayedPage = targetPage to rendered.asImageBitmap()
                 MangaStore.saveProgress(context, file, targetPage, total)
                 error = ""
-
-                // Prefetch the next page in the background so the following turn is immediate.
                 if (targetPage < total) {
                     launch(Dispatchers.IO) {
                         runCatching {
@@ -1744,7 +1835,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                     }
                 }
             } else {
-                error = "نمایش این صفحه ناموفق بود؛ فایل را بررسی کن."
+                error = "نمایش این بخش ناموفق بود؛ فایل را بررسی کن."
             }
         }
     }
@@ -1770,78 +1861,22 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
     }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-        Column(Modifier.fillMaxSize().background(Color.Black)) {
-            Row(
-                Modifier.fillMaxWidth().background(Color(0xFF111111))
-                    .statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Default.ArrowBack, "بازگشت", tint = MangaWhite)
-                }
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                    Text(file.name, color = MangaWhite, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        if (initialized) "${if (pdfSession?.hasScreenSlices() == true) "بخش" else "صفحه"} ${formatPersianNumber(page)} از ${formatPersianNumber(total)}"
-                        else "در حال آماده‌سازی…",
-                        color = MangaMuted,
-                        fontSize = 11.sp
+        Box(
+            Modifier.fillMaxSize()
+                .background(Color.Black)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            controlsVisible = true
+                            controlsPulse++
+                        }
                     )
                 }
-                Box {
-                    IconButton(onClick = { modeMenuOpen = true }) {
-                        Icon(Icons.Default.MoreVert, "حالت مطالعه", tint = accent)
-                    }
-                    DropdownMenu(
-                        expanded = modeMenuOpen,
-                        onDismissRequest = { modeMenuOpen = false },
-                        containerColor = MangaPanel
-                    ) {
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("راست‌به‌چپ", color = if (readerMode == "right") accent else MangaWhite)
-                                    Text("کشیدن صفحه به چپ برای رفتن به فصل بعد", color = MangaMuted, fontSize = 11.sp)
-                                }
-                            },
-                            onClick = {
-                                readerMode = "right"
-                                MangaStore.setSetting(context, "reader_mode", readerMode)
-                                modeMenuOpen = false
-                            },
-                            leadingIcon = { Icon(Icons.Default.ChevronRight, null, tint = accent) }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("راست‌به‌چپ + عمودی", color = if (readerMode == "right_vertical") accent else MangaWhite)
-                                    Text("صفحه‌ها پشت سر هم و اسکرولی", color = MangaMuted, fontSize = 11.sp)
-                                }
-                            },
-                            onClick = {
-                                readerMode = "right_vertical"
-                                MangaStore.setSetting(context, "reader_mode", readerMode)
-                                modeMenuOpen = false
-                            },
-                            leadingIcon = { Icon(Icons.Default.ViewList, null, tint = accent) }
-                        )
-                        if (file.extension.equals("pdf", true)) {
-                            HorizontalDivider(color = MangaLine)
-                            DropdownMenuItem(
-                                text = { Text("باز کردن با ComicScreen") },
-                                onClick = {
-                                    modeMenuOpen = false
-                                    openPdfWithComicScreen(context, file)
-                                },
-                                leadingIcon = { Icon(Icons.Default.OpenInNew, null, tint = accent) }
-                            )
-                        }
-                    }
-                }
-            }
-
+        ) {
+            // The actual reading canvas uses the full screen. Top and bottom controls
+            // float above it, instead of shrinking the page viewport.
             if (!initialized) {
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     if (error.isNotBlank()) {
                         Text(error, color = MangaMuted, textAlign = TextAlign.Center, modifier = Modifier.padding(24.dp))
                     } else {
@@ -1851,7 +1886,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
             } else if (readerMode == "right_vertical") {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.weight(1f).fillMaxWidth().background(Color(0xFF090909)),
+                    modifier = Modifier.fillMaxSize().background(Color(0xFF090909)),
                     contentPadding = PaddingValues(0.dp),
                     verticalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
@@ -1867,22 +1902,26 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                 }
             } else {
                 Box(
-                    Modifier.weight(1f).fillMaxWidth().background(Color(0xFF090909))
+                    Modifier.fillMaxSize().background(Color(0xFF090909))
                         .pointerInput(page, total, initialized, readerMode) {
                             var dragDistance = 0f
+                            val swipeThreshold = maxOf(72.dp.toPx(), size.width * 0.18f)
                             detectHorizontalDragGestures(
                                 onHorizontalDrag = { change, amount ->
                                     dragDistance += amount
                                     change.consume()
                                 },
                                 onDragEnd = {
-                                    if (initialized && dragDistance < -55f) {
+                                    // Right-to-left: advance only after a deliberate left swipe.
+                                    // Tapping the page only reveals the temporary controls.
+                                    if (initialized && dragDistance <= -swipeThreshold) {
                                         page = (page + 1).coerceAtMost(total)
-                                    } else if (initialized && dragDistance > 55f) {
+                                    } else if (initialized && dragDistance >= swipeThreshold) {
                                         page = (page - 1).coerceAtLeast(1)
                                     }
                                     dragDistance = 0f
-                                }
+                                },
+                                onDragCancel = { dragDistance = 0f }
                             )
                         },
                     contentAlignment = Alignment.Center
@@ -1909,7 +1948,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                             if (shown != null) {
                                 Image(
                                     shown.second,
-                                    contentDescription = "صفحه ${shown.first}",
+                                    contentDescription = "بخش ${shown.first}",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Fit
                                 )
@@ -1923,59 +1962,147 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                 }
             }
 
-            Column(
-                Modifier.fillMaxWidth().background(Color(0xFF111111))
-                    .navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)
+            AnimatedVisibility(
+                visible = controlsVisible,
+                modifier = Modifier.align(Alignment.TopCenter),
+                enter = slideInVertically(tween(160)) { -it } + fadeIn(tween(140)),
+                exit = slideOutVertically(tween(180)) { -it } + fadeOut(tween(160))
             ) {
                 Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    Modifier.fillMaxWidth().background(Color(0xE6111111))
+                        .statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(
-                        onClick = {
-                            val nextPage = (page + 1).coerceAtMost(total)
-                            page = nextPage
-                            if (readerMode == "right_vertical") verticalSeekTarget = nextPage - 1
-                        },
-                        enabled = initialized && page < total
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, "بازگشت", tint = MangaWhite)
+                    }
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                        Text(file.name, color = MangaWhite, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            if (initialized) "${if (pdfSession?.hasScreenSlices() == true) "بخش" else "صفحه"} ${formatPersianNumber(page)} از ${formatPersianNumber(total)}"
+                            else "در حال آماده‌سازی…",
+                            color = MangaMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { modeMenuOpen = true; controlsPulse++ }) {
+                            Icon(Icons.Default.MoreVert, "حالت مطالعه", tint = accent)
+                        }
+                        DropdownMenu(
+                            expanded = modeMenuOpen,
+                            onDismissRequest = { modeMenuOpen = false; controlsPulse++ },
+                            containerColor = MangaPanel
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text("راست‌به‌چپ", color = if (readerMode == "right") accent else MangaWhite)
+                                        Text("کشیدن صفحه به چپ برای رفتن به بخش بعد", color = MangaMuted, fontSize = 11.sp)
+                                    }
+                                },
+                                onClick = {
+                                    readerMode = "right"
+                                    MangaStore.setSetting(context, "reader_mode", readerMode)
+                                    modeMenuOpen = false
+                                    controlsVisible = true
+                                    controlsPulse++
+                                },
+                                leadingIcon = { Icon(Icons.Default.ChevronRight, null, tint = accent) }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text("راست‌به‌چپ + عمودی", color = if (readerMode == "right_vertical") accent else MangaWhite)
+                                        Text("بخش‌ها پشت سر هم و اسکرولی", color = MangaMuted, fontSize = 11.sp)
+                                    }
+                                },
+                                onClick = {
+                                    readerMode = "right_vertical"
+                                    MangaStore.setSetting(context, "reader_mode", readerMode)
+                                    modeMenuOpen = false
+                                    controlsVisible = true
+                                    controlsPulse++
+                                },
+                                leadingIcon = { Icon(Icons.Default.ViewList, null, tint = accent) }
+                            )
+                            if (file.extension.equals("pdf", true)) {
+                                HorizontalDivider(color = MangaLine)
+                                DropdownMenuItem(
+                                    text = { Text("باز کردن با ComicScreen") },
+                                    onClick = {
+                                        modeMenuOpen = false
+                                        openPdfWithComicScreen(context, file)
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.OpenInNew, null, tint = accent) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            AnimatedVisibility(
+                visible = controlsVisible,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = slideInVertically(tween(160)) { it } + fadeIn(tween(140)),
+                exit = slideOutVertically(tween(180)) { it } + fadeOut(tween(160))
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().background(Color(0xE6111111))
+                        .navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(Icons.Default.ChevronRight, "صفحه بعد", tint = if (page < total) MangaWhite else MangaMuted)
+                        IconButton(
+                            onClick = {
+                                page = (page + 1).coerceAtMost(total)
+                                if (readerMode == "right_vertical") verticalSeekTarget = page - 1
+                                controlsPulse++
+                            },
+                            enabled = initialized && page < total
+                        ) {
+                            Icon(Icons.Default.ChevronRight, "صفحه بعد", tint = if (page < total) MangaWhite else MangaMuted)
+                        }
+                        Text(
+                            "${formatPersianNumber(page)} / ${formatPersianNumber(total)}",
+                            color = MangaWhite,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = {
+                                page = (page - 1).coerceAtLeast(1)
+                                if (readerMode == "right_vertical") verticalSeekTarget = page - 1
+                                controlsPulse++
+                            },
+                            enabled = initialized && page > 1
+                        ) {
+                            Icon(Icons.Default.ChevronLeft, "صفحه قبل", tint = if (page > 1) MangaWhite else MangaMuted)
+                        }
+                    }
+                    if (initialized && total > 1) {
+                        Slider(
+                            value = page.toFloat().coerceIn(1f, total.toFloat()),
+                            onValueChange = {
+                                page = it.roundToInt().coerceIn(1, total)
+                                if (readerMode == "right_vertical") verticalSeekTarget = page - 1
+                                controlsPulse++
+                            },
+                            valueRange = 1f..total.toFloat(),
+                            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = MangaLine)
+                        )
                     }
                     Text(
-                        "${formatPersianNumber(page)} / ${formatPersianNumber(total)}",
-                        color = MangaWhite,
-                        fontWeight = FontWeight.Bold
-                    )
-                    IconButton(
-                        onClick = {
-                            val previousPage = (page - 1).coerceAtLeast(1)
-                            page = previousPage
-                            if (readerMode == "right_vertical") verticalSeekTarget = previousPage - 1
-                        },
-                        enabled = initialized && page > 1
-                    ) {
-                        Icon(Icons.Default.ChevronLeft, "صفحه قبل", tint = if (page > 1) MangaWhite else MangaMuted)
-                    }
-                }
-                if (initialized && total > 1) {
-                    Slider(
-                        value = page.toFloat().coerceIn(1f, total.toFloat()),
-                        onValueChange = { selected ->
-                            page = selected.roundToInt().coerceIn(1, total)
-                            if (readerMode == "right_vertical") verticalSeekTarget = page - 1
-                        },
-                        valueRange = 1f..total.toFloat(),
-                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = MangaLine)
+                        "${if (readerMode == "right_vertical") "حالت راست‌به‌چپ + عمودی" else "حالت راست‌به‌چپ"} · پیشرفت این فایل: ${formatPersianNumber(if (total > 0) (page * 100 / total) else 0)}٪",
+                        color = MangaMuted,
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
-                Text(
-                    "${if (readerMode == "right_vertical") "حالت راست‌به‌چپ + عمودی" else "حالت راست‌به‌چپ"} · پیشرفت این فایل: ${formatPersianNumber(if (total > 0) (page * 100 / total) else 0)}٪",
-                    color = MangaMuted,
-                    fontSize = 11.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
         }
     }
