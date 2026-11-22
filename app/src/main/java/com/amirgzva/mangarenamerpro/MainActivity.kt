@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.FileObserver
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -90,6 +91,23 @@ private fun MangaFileManager() {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Watch the currently opened directory so external file changes appear automatically.
+    DisposableEffect(hasAccess, currentPath) {
+        val watcher = if (hasAccess) {
+            runCatching {
+                object : FileObserver(
+                    currentPath,
+                    CREATE or DELETE or MOVED_FROM or MOVED_TO or CLOSE_WRITE or ATTRIB
+                ) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path != null) refreshKey++
+                    }
+                }.also { it.startWatching() }
+            }.getOrNull()
+        } else null
+        onDispose { watcher?.stopWatching() }
     }
 
     // All filesystem work is done on Dispatchers.IO. No periodic full-directory scans.
