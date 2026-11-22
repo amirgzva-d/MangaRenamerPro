@@ -12,6 +12,9 @@ import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -436,6 +439,7 @@ private fun MangaProgressBar(progress: Float, modifier: Modifier = Modifier, hei
 @Composable
 fun MangaLibraryApp() {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val prefs = remember { context.getSharedPreferences("manga_library_v2", Context.MODE_PRIVATE) }
     var hasAccess by remember { mutableStateOf(hasLibraryAccess()) }
     var activeTab by remember { mutableStateOf("library") }
@@ -498,8 +502,15 @@ fun MangaLibraryApp() {
         detailFolder = withContext(Dispatchers.IO) { runCatching { loadFolderUi(context, File(path)) }.getOrNull() }
     }
 
-    LaunchedEffect(prefs) {
-        hasAccess = hasLibraryAccess()
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasAccess = hasLibraryAccess()
+                refreshKey++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     if (readerFile != null) {
