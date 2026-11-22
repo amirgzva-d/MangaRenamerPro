@@ -30,7 +30,7 @@ internal object MangaArchivePages {
                 "cbr", "rar" -> extractRar(archive, target)
                 else -> emptyList()
             }
-            if (result.isNotEmpty()) marker.writeText("ok")
+            marker.writeText("ok")
             result
         } catch (_: Exception) {
             runCatching { target.deleteRecursively() }
@@ -69,38 +69,46 @@ internal object MangaArchivePages {
     }
 
     private fun extractSevenZip(archive: File, target: File): List<File> {
-        val candidates = mutableListOf<Pair<String, ByteArray>>()
-        SevenZFile(archive).use { seven ->
+        val candidates = mutableListOf<Pair<String, File>>()
+        var total = 0L
+        SevenZFile.builder().setFile(archive).setMaxMemoryLimitKiB(256 * 1024).get().use { seven ->
             var entry = seven.nextEntry
+            var index = 0
             while (entry != null) {
                 if (!entry.isDirectory && isImage(entry.name)) {
                     if (candidates.size >= MAX_ENTRIES) throw IllegalStateException("Archive entry limit exceeded")
-                    if (entry.size in 1..MAX_ENTRY_BYTES) {
-                        val bytes = java.io.ByteArrayOutputStream()
+                    val temp = File(target, ".entry-" + index + ".tmp")
+                    var entryTotal = 0L
+                    FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(64 * 1024)
-                        var entryTotal = 0L
                         while (true) {
                             val count = seven.read(buffer)
                             if (count < 0) break
                             entryTotal += count
-                            if (entryTotal > MAX_ENTRY_BYTES) throw IllegalStateException("Archive entry too large")
-                            bytes.write(buffer, 0, count)
+                            total += count
+                            if (entryTotal > MAX_ENTRY_BYTES || total > MAX_TOTAL_BYTES) {
+                                throw IllegalStateException("Archive expanded size limit exceeded")
+                            }
+                            output.write(buffer, 0, count)
                         }
-                        candidates.add(entry.name to bytes.toByteArray())
-                    } else {
-                        val buffer = ByteArray(64 * 1024)
-                        while (seven.read(buffer) >= 0) Unit
                     }
+                    if (temp.length() > 0L) candidates.add(entry.name to temp) else temp.delete()
+                    index++
+                } else {
+                    val buffer = ByteArray(64 * 1024)
+                    while (seven.read(buffer) >= 0) Unit
                 }
                 entry = seven.nextEntry
             }
         }
         candidates.sortWith { a, b -> naturalCompare(a.first, b.first) }
-        var total = 0L
-        return candidates.mapIndexedNotNull { index, pair ->
-            total += pair.second.size
-            if (total > MAX_TOTAL_BYTES) throw IllegalStateException("Archive expanded size limit exceeded")
-            File(target, safeOutputName(index, pair.first)).also { it.writeBytes(pair.second) }
+        return candidates.mapIndexedNotNull { pageIndex, pair ->
+            val output = File(target, safeOutputName(pageIndex, pair.first))
+            if (pair.second.renameTo(output)) output else {
+                pair.second.copyTo(output, overwrite = true)
+                pair.second.delete()
+                output
+            }
         }
     }
 

@@ -274,17 +274,22 @@ private fun pdfPageCount(file: File): Int {
 }
 
 private fun resolvePageCount(context: Context, file: File): Int {
-    if (!file.extension.equals("pdf", true)) return 0
     val saved = MangaStore.getProgress(context, file).total
     if (saved > 0) return saved
-    return pdfPageCount(file).also { if (it > 0) MangaStore.savePageCount(context, file, it) }
+    val count = when (file.extension.lowercase(Locale.ROOT)) {
+        "pdf" -> pdfPageCount(file)
+        "cbz", "zip", "cbr", "rar", "7z" -> MangaArchivePages.pages(context, file).size
+        in ImageExtensions -> 1
+        else -> 0
+    }
+    return count.also { if (it > 0) MangaStore.savePageCount(context, file, it) }
 }
 
 private fun loadFolderUi(context: Context, folder: File): MangaFolderUi {
     val files = collectMangaFiles(folder)
     var total = 0
     var read = 0
-    files.filter { it.extension.equals("pdf", true) }.forEach { file ->
+    files.forEach { file ->
         val count = resolvePageCount(context, file)
         val progress = MangaStore.getProgress(context, file)
         total += count
@@ -314,7 +319,7 @@ private fun loadFolderUi(context: Context, folder: File): MangaFolderUi {
 
 private fun loadCoverBitmap(context: Context, file: File): Bitmap? {
     if (!file.exists()) return null
-    val cache = File(context.cacheDir, "manga-cover-${file.absolutePath.hashCode()}.jpg")
+    val cache = File(context.cacheDir, "manga-cover-${file.absolutePath.hashCode()}-${file.length()}-${file.lastModified()}.jpg")
     if (cache.exists() && cache.length() > 0L) return BitmapFactory.decodeFile(cache.absolutePath)
     val bitmap = if (file.extension.lowercase(Locale.ROOT) in ImageExtensions) {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -342,6 +347,8 @@ private fun loadCoverBitmap(context: Context, file: File): Bitmap? {
                 output
             }
         }.getOrNull()
+    } else if (file.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z")) {
+        MangaArchivePages.pages(context, file).firstOrNull()?.let(::loadImagePage)
     } else null
     if (bitmap != null) {
         runCatching {
@@ -353,8 +360,13 @@ private fun loadCoverBitmap(context: Context, file: File): Bitmap? {
     return null
 }
 
-private fun renderPdfPage(file: File, pageIndex: Int, targetWidth: Int): Bitmap? {
-    if (!file.extension.equals("pdf", true)) return loadImagePage(file)
+private fun renderMangaPage(context: Context, file: File, pageIndex: Int, targetWidth: Int): Bitmap? {
+    if (!file.extension.equals("pdf", true)) {
+        if (file.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z")) {
+            return MangaArchivePages.pages(context, file).getOrNull(pageIndex)?.let(::loadImagePage)
+        }
+        return loadImagePage(file)
+    }
     return runCatching {
         val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
         val renderer = PdfRenderer(descriptor)
@@ -520,7 +532,7 @@ fun MangaLibraryApp() {
     } else if (showFileManager) {
         MangaFileManager(
             onExit = { showFileManager = false; refreshKey++ },
-            onOpenPdf = { readerFile = it }
+            onOpenMangaFile = { readerFile = it }
         )
     } else {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -1249,7 +1261,12 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
 
     LaunchedEffect(file.absolutePath) {
         val count = withContext(Dispatchers.IO) {
-            if (file.extension.equals("pdf", true)) pdfPageCount(file) else if (file.extension.lowercase(Locale.ROOT) in ImageExtensions) 1 else 0
+            when (file.extension.lowercase(Locale.ROOT)) {
+                "pdf" -> pdfPageCount(file)
+                "cbz", "zip", "cbr", "rar", "7z" -> MangaArchivePages.pages(context, file).size
+                in ImageExtensions -> 1
+                else -> 0
+            }
         }
         if (count > 0) {
             total = count
@@ -1264,7 +1281,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
     LaunchedEffect(file.absolutePath, page, initialized) {
         if (initialized) {
             val widthPx = with(density) { 1500.dp.roundToPx() }
-            val rendered = withContext(Dispatchers.IO) { renderPdfPage(file, page - 1, widthPx) }
+            val rendered = withContext(Dispatchers.IO) { renderMangaPage(context, file, page - 1, widthPx) }
             if (rendered != null) {
                 pageImage = rendered.asImageBitmap()
                 MangaStore.saveProgress(context, file, page, total)

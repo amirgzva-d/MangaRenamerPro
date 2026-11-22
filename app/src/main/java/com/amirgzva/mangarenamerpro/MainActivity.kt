@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun MangaFileManager(onExit: () -> Unit = {}, onOpenPdf: (File) -> Unit = {}) {
+internal fun MangaFileManager(onExit: () -> Unit = {}, onOpenMangaFile: (File) -> Unit = {}) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasAccess by remember { mutableStateOf(hasAllFilesAccess()) }
@@ -329,8 +329,8 @@ internal fun MangaFileManager(onExit: () -> Unit = {}, onOpenPdf: (File) -> Unit
                         if (file.isDirectory) {
                             currentPath = file.absolutePath
                             selected.clear()
-                        } else if (file.extension.equals("pdf", true)) {
-                            onOpenPdf(file)
+                        } else if (file.extension.lowercase(Locale.ROOT) in MangaExtensions) {
+                            onOpenMangaFile(file)
                         }
                     }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (canRename) {
