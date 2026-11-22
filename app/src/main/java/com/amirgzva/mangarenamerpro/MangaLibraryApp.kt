@@ -10,8 +10,11 @@ import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.Settings
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -247,18 +250,21 @@ internal object MangaStore {
     }
 }
 
-private fun collectMangaFiles(folder: File, maxDepth: Int = 4): List<File> {
-    val result = mutableListOf<File>()
-    fun walk(dir: File, depth: Int) {
-        if (depth > maxDepth || !dir.canRead()) return
-        val children = runCatching { dir.listFiles()?.sortedBy { it.name.lowercase(Locale.ROOT) } }.getOrNull() ?: return
-        children.forEach { child ->
-            if (child.isFile && child.extension.lowercase(Locale.ROOT) in LibraryExtensions) result.add(child)
-            else if (child.isDirectory && !child.name.startsWith(".") && depth < maxDepth) walk(child, depth + 1)
-        }
-    }
-    walk(folder, 0)
-    return result
+/**
+ * One directory directly under the selected library root represents one manga.
+ * Only files directly inside that manga directory belong to it; child directories
+ * are never mixed into the manga's chapter list or treated as chapter files.
+ */
+private fun collectMangaFiles(folder: File): List<File> {
+    if (!folder.isDirectory || !folder.canRead()) return emptyList()
+    return runCatching {
+        folder.listFiles()
+            ?.asSequence()
+            ?.filter { it.isFile && it.extension.lowercase(Locale.ROOT) in LibraryExtensions }
+            ?.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+            ?.toList()
+            ?: emptyList()
+    }.getOrDefault(emptyList())
 }
 
 private fun pdfPageCount(file: File): Int {
@@ -400,6 +406,31 @@ private fun loadImagePage(file: File): Bitmap? {
 private fun formatPersianNumber(value: Int): String =
     value.toString().map { if (it in '0'..'9') ('۰'.code + it.code - '0'.code).toChar() else it }.joinToString("")
 
+/**
+ * Converts Android's local external-storage tree URI to a filesystem path.
+ * The app still uses MANAGE_EXTERNAL_STORAGE for its existing full file manager;
+ * the picker is only used to select the library's parent directory.
+ */
+private fun resolveLocalTreeDirectory(context: Context, treeUri: Uri): File? = runCatching {
+    val documentId = DocumentsContract.getTreeDocumentId(treeUri)
+    val separator = documentId.indexOf(':')
+    if (separator <= 0) return@runCatching null
+
+    val volumeId = documentId.substring(0, separator)
+    val relativePath = documentId.substring(separator + 1)
+    val volumeRoot = (if (volumeId.equals("primary", ignoreCase = true)) {
+        Environment.getExternalStorageDirectory()
+    } else {
+        File("/storage/$volumeId")
+    }).canonicalFile
+
+    val selected = File(volumeRoot, relativePath).canonicalFile
+    val rootPrefix = volumeRoot.path + File.separator
+    if (selected.path != volumeRoot.path && !selected.path.startsWith(rootPrefix)) return@runCatching null
+    if (!selected.exists() || !selected.isDirectory || !selected.canRead()) return@runCatching null
+    selected
+}.getOrNull()
+
 private fun hasLibraryAccess(): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
 
@@ -498,11 +529,13 @@ fun MangaLibraryApp() {
                     if (!root.exists() || !root.isDirectory || !root.canRead()) {
                         throw IllegalStateException("مسیر کتابخانه در دسترس نیست")
                     }
-                    root.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }
-                        ?.sortedBy { it.name.lowercase(Locale.ROOT) }
-                        ?.mapNotNull { folder ->
-                            loadFolderUi(context, folder).takeIf { it.files.isNotEmpty() }
-                        } ?: emptyList()
+                    // The selected parent folder contains manga folders only.
+                    // Each immediate child directory is one manga, named by its folder.
+                    root.listFiles()
+                        ?.filter { it.isDirectory && !it.name.startsWith(".") }
+                        ?.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+                        ?.map { mangaFolder -> loadFolderUi(context, mangaFolder) }
+                        ?: emptyList()
                 }
             }
             folders = result.getOrElse { emptyList() }
@@ -1164,8 +1197,33 @@ private fun SettingsScreen(
     onOpenFileManager: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var rootDraft by remember(rootPath) { mutableStateOf(rootPath) }
+    val context = LocalContext.current
     var rootError by remember { mutableStateOf("") }
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { selectedUri ->
+        if (selectedUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    selectedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    selectedUri,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            val selectedFolder = resolveLocalTreeDirectory(context, selectedUri)
+            if (selectedFolder != null) {
+                rootError = ""
+                onRootChange(selectedFolder.absolutePath)
+            } else {
+                rootError = "این انتخاب، پوشه محلی قابل‌دسترسی نیست. لطفاً پوشه‌ای از حافظه داخلی یا کارت حافظه انتخاب کن."
+            }
+        }
+    }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         SettingsGroup("چیدمان کتابخانه", "تعداد ستون‌ها و نوع نمایش کارت‌ها را مطابق سلیقه‌ات تنظیم کن.")
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -1204,29 +1262,49 @@ private fun SettingsScreen(
             }
         }
         HorizontalDivider(color = MangaLine)
-        SettingsGroup("مسیر کتابخانه", "پوشه‌ای که کارت‌های مانگا از آن خوانده می‌شوند. فایل‌منیجر همچنان همه مسیرها را نشان می‌دهد.")
-        OutlinedTextField(
-            value = rootDraft,
-            onValueChange = { rootDraft = it; rootError = "" },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("مسیر پوشه") },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MangaGold, unfocusedBorderColor = MangaLine,
-                focusedTextColor = MangaWhite, unfocusedTextColor = MangaWhite
-            )
+        SettingsGroup(
+            "پوشه مادر کتابخانه",
+            "یک پوشه اصلی انتخاب کن که داخل آن پوشه‌های مانگا قرار دارند. نام هر پوشه، نام همان مانگا می‌شود و فایل‌های داخل آن فصل‌های همان مانگا هستند."
         )
-        if (rootError.isNotBlank()) Text(rootError, color = Color(0xFFFF7777), fontSize = 12.sp)
-        OutlinedButton(
-            onClick = {
-                val folder = File(rootDraft.trim())
-                if (folder.exists() && folder.isDirectory && folder.canRead()) onRootChange(folder.absolutePath)
-                else rootError = "این مسیر وجود ندارد یا قابل خواندن نیست."
-            },
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-            border = BorderStroke(1.dp, MangaGold),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = MangaGold)
-        ) { Text("ذخیره مسیر کتابخانه") }
+            color = MangaPanel,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, MangaLine)
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Folder, null, tint = MangaGold)
+                    Spacer(Modifier.width(8.dp))
+                    Text("مسیر انتخاب‌شده", color = MangaWhite, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    rootPath,
+                    color = MangaMuted,
+                    fontSize = 12.sp,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "ساختار مورد انتظار: پوشه مادر ← پوشه هر مانگا ← فایل‌های فصل",
+                    color = MangaGold,
+                    fontSize = 11.sp
+                )
+            }
+        }
+        Button(
+            onClick = { folderPicker.launch(null) },
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(15.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = MangaGold, contentColor = MangaBlack)
+        ) {
+            Icon(Icons.Default.Folder, null)
+            Spacer(Modifier.width(8.dp))
+            Text("انتخاب پوشه مادر", fontWeight = FontWeight.Bold)
+        }
+        if (rootError.isNotBlank()) {
+            Text(rootError, color = Color(0xFFFF7777), fontSize = 12.sp)
+        }
         HorizontalDivider(color = MangaLine)
         SettingsGroup("مدیریت فایل‌ها", "ابزار قبلی تغییر نام گروهی و نمایش تمام فایل‌ها حفظ شده است.")
         Button(
