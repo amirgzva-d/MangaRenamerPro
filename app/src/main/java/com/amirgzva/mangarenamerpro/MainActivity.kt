@@ -127,40 +127,56 @@ private fun MangaFileManager() {
         if (batch.isNotEmpty()) {
             isRenaming = true
             val outcome = withContext(Dispatchers.IO) {
-                val staged = mutableListOf<Triple<File, File, File>>()
-                val completed = mutableListOf<Triple<File, File, File>>()
-                val failed = mutableListOf<String>()
-                try {
-                    // Phase 1: move every source to a unique temporary name.
-                    batch.forEach { (source, newName) ->
-                        val target = File(source.parentFile, newName)
-                        val temp = File(source.parentFile, ".manga-renamer-${UUID.randomUUID()}.tmp")
-                        if (!source.exists()) throw IllegalStateException("فایل مبدأ پیدا نشد: ${source.name}")
-                        if (target.exists() && batch.none { it.first.absolutePath == target.absolutePath }) {
-                            throw IllegalStateException("نام مقصد موجود است: ${target.name}")
+                data class Staged(val source: File, val temp: File, val target: File)
+                val staged = mutableListOf<Staged>()
+                val errors = mutableListOf<String>()
+                var succeeded = 0
+
+                // Stage files independently: one locked/invalid file must not cancel the others.
+                batch.forEach { (source, newName) ->
+                    try {
+                        if (!source.exists() || !source.isFile) {
+                            errors.add("${source.name}: فایل در دسترس نیست")
+                        } else {
+                            val target = File(source.parentFile, newName)
+                            val temp = File(source.parentFile, ".manga-renamer-${UUID.randomUUID()}.tmp")
+                            Files.move(source.toPath(), temp.toPath())
+                            staged.add(Staged(source, temp, target))
                         }
-                        Files.move(source.toPath(), temp.toPath())
-                        staged.add(Triple(source, temp, target))
-                    }
-                    // Phase 2: move all staged files to their final names.
-                    staged.forEach { (source, temp, target) ->
-                        Files.move(temp.toPath(), target.toPath())
-                        completed.add(Triple(source, temp, target))
-                    }
-                } catch (e: Exception) {
-                    failed.add(e.localizedMessage ?: e.javaClass.simpleName)
-                    // Roll back finished destinations first, then unfinished temp files.
-                    completed.asReversed().forEach { (source, _, target) ->
-                        runCatching { if (target.exists() && !source.exists()) Files.move(target.toPath(), source.toPath()) }
-                    }
-                    staged.asReversed().filter { item -> completed.none { it.second == item.second } }.forEach { (source, temp, _) ->
-                        runCatching { if (temp.exists() && !source.exists()) Files.move(temp.toPath(), source.toPath()) }
+                    } catch (e: Exception) {
+                        errors.add("${source.name}: ${e.localizedMessage ?: "امکان انتقال وجود ندارد"}")
                     }
                 }
-                (if (failed.isEmpty()) completed.size else 0) to failed
+
+                // Finalize each staged file independently. Existing external targets or
+                // a failure for one item do not prevent other items from being renamed.
+                staged.forEach { item ->
+                    try {
+                        if (item.target.exists()) {
+                            throw IllegalStateException("نام مقصد از قبل وجود دارد")
+                        }
+                        Files.move(item.temp.toPath(), item.target.toPath())
+                        succeeded++
+                    } catch (e: Exception) {
+                        errors.add("${item.source.name}: ${e.localizedMessage ?: "تغییر نام ناموفق"}")
+                        // Restore only this failed item; continue with the remaining batch.
+                        runCatching {
+                            if (item.temp.exists() && !item.source.exists()) {
+                                Files.move(item.temp.toPath(), item.source.toPath())
+                            }
+                        }.onFailure {
+                            errors.add("${item.source.name}: بازگردانی ناموفق بود؛ فایل موقت در همان پوشه باقی مانده است")
+                        }
+                    }
+                }
+                succeeded to errors
             }
-            status = if (outcome.second.isEmpty()) "انجام شد: ${outcome.first} فایل تغییر نام یافت."
-                else "موفق: ${outcome.first} | ناموفق: ${outcome.second.size} — ${outcome.second.take(2).joinToString("؛ ")}"
+            status = if (outcome.second.isEmpty()) {
+                "با موفقیت انجام شد: ${outcome.first} فایل تغییر نام یافت."
+            } else {
+                "تغییرنام انجام شد: موفق ${outcome.first} | ردشده/ناموفق ${outcome.second.size}. " +
+                    outcome.second.take(3).joinToString("؛ ")
+            }
             pendingRename = emptyList()
             isRenaming = false
             refreshKey++
