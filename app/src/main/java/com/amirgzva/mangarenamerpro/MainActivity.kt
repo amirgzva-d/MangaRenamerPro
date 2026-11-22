@@ -373,12 +373,12 @@ private fun MangaFileManager() {
  */
 private fun extractEpisodeNumber(stem: String, fallbackIndex: Int): String {
     val withoutCopySuffix = stem
-        .replace(Regex("""\\s*\\(\\s*[0-9۰-۹٠-٩]+\\s*\\)\\s*$"""), "")
+        .replace(Regex("""\s*\(\s*[0-9۰-۹٠-٩]+\s*\)\s*$"""), "")
         .trim()
 
     val numberPattern = """[0-9۰-۹٠-٩]+(?:[._-][0-9۰-۹٠-٩]+)?"""
     val chapterNumber = Regex(
-        """(?i)(?:^|[^a-z])ch(?:apter)?[\\s._-]*($numberPattern)"""
+        """(?i)(?:^|[^a-z])ch(?:apter)?[\s._-]*($numberPattern)"""
     ).find(withoutCopySuffix)?.groupValues?.get(1)
 
     val rawNumber = chapterNumber
