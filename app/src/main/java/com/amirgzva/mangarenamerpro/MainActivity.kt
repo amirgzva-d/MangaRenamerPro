@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.FileObserver
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -93,21 +94,30 @@ private fun MangaFileManager() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Watch the currently opened directory so external file changes appear automatically.
+    // Observe only the open directory. Debounce bursts into one background reload.
     DisposableEffect(hasAccess, currentPath) {
-        val watcher = if (hasAccess) {
+        val handler = Handler(Looper.getMainLooper())
+        val refreshTask = Runnable { refreshKey++ }
+        val observer = if (hasAccess) {
             runCatching {
                 object : FileObserver(
                     currentPath,
-                    CREATE or DELETE or MOVED_FROM or MOVED_TO or CLOSE_WRITE or ATTRIB
+                    FileObserver.CREATE or FileObserver.DELETE or FileObserver.MOVED_FROM or
+                        FileObserver.MOVED_TO or FileObserver.CLOSE_WRITE or FileObserver.ATTRIB
                 ) {
                     override fun onEvent(event: Int, path: String?) {
-                        if (path != null) refreshKey++
+                        if (path != null) {
+                            handler.removeCallbacks(refreshTask)
+                            handler.postDelayed(refreshTask, 450L)
+                        }
                     }
                 }.also { it.startWatching() }
             }.getOrNull()
         } else null
-        onDispose { watcher?.stopWatching() }
+        onDispose {
+            observer?.stopWatching()
+            handler.removeCallbacks(refreshTask)
+        }
     }
 
     // All filesystem work is done on Dispatchers.IO. No periodic full-directory scans.
@@ -150,40 +160,43 @@ private fun MangaFileManager() {
                 val errors = mutableListOf<String>()
                 var succeeded = 0
 
-                // Stage files independently: one locked/invalid file must not cancel the others.
-                batch.forEach { (source, newName) ->
-                    try {
-                        if (!source.exists() || !source.isFile) {
-                            errors.add("${source.name}: فایل در دسترس نیست")
-                        } else {
-                            val target = File(source.parentFile, newName)
-                            val temp = File(source.parentFile, ".manga-renamer-${UUID.randomUUID()}.tmp")
-                            Files.move(source.toPath(), temp.toPath())
-                            staged.add(Staged(source, temp, target))
-                        }
+                fun moveSameFolder(source: File, destination: File): String? {
+                    if (!source.exists()) return "فایل مبدأ وجود ندارد"
+                    if (destination.exists()) return "نام مقصد از قبل وجود دارد"
+                    if (source.renameTo(destination)) return null
+                    return try {
+                        Files.move(source.toPath(), destination.toPath())
+                        null
                     } catch (e: Exception) {
-                        errors.add("${source.name}: ${e.localizedMessage ?: "امکان انتقال وجود ندارد"}")
+                        e.localizedMessage ?: e.javaClass.simpleName
                     }
                 }
 
-                // Finalize each staged file independently. Existing external targets or
-                // a failure for one item do not prevent other items from being renamed.
+                // First stage each eligible file independently. A failure never cancels other files.
+                batch.forEach { (source, newName) ->
+                    val temp = File(source.parentFile, ".manga-renamer-${UUID.randomUUID()}.tmp")
+                    val error = try { moveSameFolder(source, temp) } catch (e: Exception) {
+                        e.localizedMessage ?: e.javaClass.simpleName
+                    }
+                    if (error == null) staged.add(Staged(source, temp, File(source.parentFile, newName)))
+                    else errors.add("${source.name}: $error")
+                }
+
+                // Then finalize each staged file independently.
                 staged.forEach { item ->
-                    try {
-                        if (item.target.exists()) {
-                            throw IllegalStateException("نام مقصد از قبل وجود دارد")
-                        }
-                        Files.move(item.temp.toPath(), item.target.toPath())
+                    val error = try { moveSameFolder(item.temp, item.target) } catch (e: Exception) {
+                        e.localizedMessage ?: e.javaClass.simpleName
+                    }
+                    if (error == null) {
                         succeeded++
-                    } catch (e: Exception) {
-                        errors.add("${item.source.name}: ${e.localizedMessage ?: "تغییر نام ناموفق"}")
-                        // Restore only this failed item; continue with the remaining batch.
-                        runCatching {
-                            if (item.temp.exists() && !item.source.exists()) {
-                                Files.move(item.temp.toPath(), item.source.toPath())
-                            }
-                        }.onFailure {
-                            errors.add("${item.source.name}: بازگردانی ناموفق بود؛ فایل موقت در همان پوشه باقی مانده است")
+                    } else {
+                        errors.add("${item.source.name}: $error")
+                        // Restore only this file and keep processing the rest of the batch.
+                        val restoreError = runCatching {
+                            moveSameFolder(item.temp, item.source)
+                        }.getOrNull()
+                        if (restoreError != null) {
+                            errors.add("${item.source.name}: بازگردانی ناموفق؛ فایل موقت باقی ماند")
                         }
                     }
                 }
@@ -192,8 +205,8 @@ private fun MangaFileManager() {
             status = if (outcome.second.isEmpty()) {
                 "با موفقیت انجام شد: ${outcome.first} فایل تغییر نام یافت."
             } else {
-                "تغییرنام انجام شد: موفق ${outcome.first} | ردشده/ناموفق ${outcome.second.size}. " +
-                    outcome.second.take(3).joinToString("؛ ")
+                "تغییرنام جزئی انجام شد: موفق ${outcome.first} | ردشده ${outcome.second.size}. " +
+                    outcome.second.take(4).joinToString("؛ ")
             }
             pendingRename = emptyList()
             isRenaming = false
@@ -202,10 +215,10 @@ private fun MangaFileManager() {
     }
 
     // Eligibility is checked in one place so select-all, individual selection and rename use identical rules.
+    // Eligibility is based on file type only. Actual write/rename permission is tested per file
+    // during execution so one read-only or locked item cannot block the rest of the batch.
     fun canRename(file: File): Boolean =
-        file.exists() && file.isFile &&
-            file.extension.lowercase(Locale.ROOT) in MangaExtensions &&
-            file.parentFile?.let { it.exists() && it.isDirectory && it.canWrite() } == true
+        file.isFile && file.extension.lowercase(Locale.ROOT) in MangaExtensions
 
     val eligible = entries.filter(::canRename)
     // Drop stale/ineligible selections automatically after refresh or filesystem changes.
@@ -215,7 +228,6 @@ private fun MangaFileManager() {
     }
     val selectedFiles = entries.filter { it.absolutePath in selected && canRename(it) }
     val renameCandidates = selectedFiles
-    val skippedSelectionCount = selectedFiles.size - renameCandidates.size
     val renameRows = renameCandidates.mapIndexed { index, file ->
         val ext = file.extension
         val stem = if (ext.isBlank()) file.name else file.nameWithoutExtension
@@ -243,8 +255,7 @@ private fun MangaFileManager() {
                                 selected.clear()
                             }) { Icon(Icons.Default.ArrowBack, "بازگشت", tint = TextMain) }
                         }
-                        IconButton(onClick = { refreshKey++ }) { Icon(Icons.Default.Refresh, "بروزرسانی", tint = TextMain) }
-                        Column(Modifier.padding(start = 4.dp)) {
+                                    Column(Modifier.padding(start = 4.dp)) {
                             Text("MANGA FILE MANAGER", fontSize = 10.sp, color = Accent, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                             Text("مدیریت فایل‌های مانگا", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TextMain)
                         }
@@ -328,7 +339,6 @@ private fun MangaFileManager() {
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(seriesName, { seriesName = it }, label = { Text("نام مانگا") }, singleLine = true)
             Text("${renameRows.size} فایل واجد شرایط آماده تغییر نام", color = Accent, fontSize = 12.sp)
-            if (skippedSelectionCount > 0) Text("$skippedSelectionCount مورد انتخاب‌شده به دلیل پشتیبانی‌نشدن یا پوشه‌بودن تغییر نام داده نمی‌شود.", color = TextMuted, fontSize = 11.sp)
             LazyColumn(Modifier.heightIn(max = 220.dp)) { items(renameRows) { (file, name) -> Column(Modifier.padding(vertical = 4.dp)) {
                 Text(file.name, color = TextMuted, fontSize = 10.sp)
                 Text(name, color = TextMain, fontSize = 11.sp)
@@ -337,12 +347,27 @@ private fun MangaFileManager() {
         confirmButton = { Button(onClick = {
             if (seriesName.isBlank()) { status = "نام مانگا را وارد کن."; return@Button }
             if (seriesName.any { it in "\\\\/:*?<>|\"" }) { status = "نام واردشده دارای نویسه غیرمجاز است."; return@Button }
-            // Per-file conflicts are handled independently in the worker; they must not cancel the whole batch.
             if (isRenaming || pendingRename.isNotEmpty()) return@Button
-            pendingRename = renameRows.filter { (source, newName) -> source.name != newName }
-            if (pendingRename.isEmpty()) { status = "هیچ فایلی نیاز به تغییر نام ندارد."; return@Button }
+            val candidates = renameRows.filter { (source, newName) -> source.name != newName }
+            val duplicateTargets = candidates.groupBy { it.second.lowercase(Locale.ROOT) }
+                .filterValues { it.size > 1 }.keys
+            val movingPaths = candidates.map { it.first.absolutePath }.toSet()
+            val accepted = candidates.filter { (source, newName) ->
+                val target = File(source.parentFile, newName)
+                newName.isNotBlank() &&
+                    newName.none { it in "\\\\/:*?<>|\"" } &&
+                    newName.lowercase(Locale.ROOT) !in duplicateTargets &&
+                    (!target.exists() || target.absolutePath in movingPaths)
+            }
+            val skipped = candidates.size - accepted.size
+            if (accepted.isEmpty()) {
+                status = if (candidates.isEmpty()) "هیچ فایلی نیاز به تغییر نام ندارد." else "هیچ‌کدام قابل اجرا نیستند؛ نام مقصد تکراری یا از قبل موجود است."
+                return@Button
+            }
+            // Only valid candidates enter the worker. Invalid files are skipped, never a reason to cancel others.
+            pendingRename = accepted
             renameOpen = false
-            status = "در حال تغییر نام ${pendingRename.size} فایل…"
+            status = "شروع تغییر نام ${accepted.size} فایل؛ ${skipped} مورد به دلیل تداخل یا نام نامعتبر رد شد."
         }, enabled = renameRows.isNotEmpty() && seriesName.isNotBlank() && !isRenaming, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) { Text(if (isRenaming) "در حال اجرا…" else "اعمال تغییرات") } },
         dismissButton = { TextButton(onClick = { renameOpen = false }) { Text("انصراف") } }
     )
