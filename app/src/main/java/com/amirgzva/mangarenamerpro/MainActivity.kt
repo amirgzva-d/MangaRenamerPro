@@ -228,11 +228,33 @@ private fun MangaFileManager() {
     }
     val selectedFiles = entries.filter { it.absolutePath in selected && canRename(it) }
     val renameCandidates = selectedFiles
-    val renameRows = renameCandidates.mapIndexed { index, file ->
+    val rawRenameRows = renameCandidates.mapIndexed { index, file ->
         val ext = file.extension
         val stem = if (ext.isBlank()) file.name else file.nameWithoutExtension
         val normalized = extractEpisodeNumber(stem, index + 1)
-        file to if (ext.isBlank()) "$seriesName $normalized" else "$seriesName $normalized.$ext"
+        val baseName = if (ext.isBlank()) "$seriesName $normalized" else "$seriesName $normalized.$ext"
+        Triple(file, baseName, ext)
+    }
+    // Give collisions a safe copy suffix instead of silently skipping an episode.
+    val movableSourcePaths = rawRenameRows
+        .filter { (source, baseName, _) -> source.name != baseName }
+        .map { it.first.absolutePath }.toSet()
+    val reservedTargetNames = mutableSetOf<String>()
+    val renameRows = rawRenameRows.map { (file, baseName, ext) ->
+        val baseStem = if (ext.isBlank()) baseName else baseName.removeSuffix(".$ext")
+        var targetName = baseName
+        var copyIndex = 2
+        fun targetIsTaken(name: String): Boolean {
+            val target = File(file.parentFile, name)
+            return (target.exists() && target.absolutePath !in movableSourcePaths) ||
+                name.lowercase(Locale.ROOT) in reservedTargetNames
+        }
+        while (targetIsTaken(targetName)) {
+            targetName = if (ext.isBlank()) "$baseStem ($copyIndex)" else "$baseStem ($copyIndex).$ext"
+            copyIndex++
+        }
+        reservedTargetNames.add(targetName.lowercase(Locale.ROOT))
+        file to targetName
     }
 
     Scaffold(
@@ -341,15 +363,8 @@ private fun MangaFileManager() {
             if (seriesName.any { it in "\\\\/:*?<>|\"" }) { status = "نام واردشده دارای نویسه غیرمجاز است."; return@Button }
             if (isRenaming || pendingRename.isNotEmpty()) return@Button
             val candidates = renameRows.filter { (source, newName) -> source.name != newName }
-            val duplicateTargets = candidates.groupBy { it.second.lowercase(Locale.ROOT) }
-                .filterValues { it.size > 1 }.keys
-            val movingPaths = candidates.map { it.first.absolutePath }.toSet()
-            val accepted = candidates.filter { (source, newName) ->
-                val target = File(source.parentFile, newName)
-                newName.isNotBlank() &&
-                    newName.none { it in "\\\\/:*?<>|\"" } &&
-                    newName.lowercase(Locale.ROOT) !in duplicateTargets &&
-                    (!target.exists() || target.absolutePath in movingPaths)
+            val accepted = candidates.filter { (_, newName) ->
+                newName.isNotBlank() && newName.none { it in "\\\\/:*?<>|\"" }
             }
             val skipped = candidates.size - accepted.size
             if (accepted.isEmpty()) {
@@ -377,8 +392,12 @@ private fun extractEpisodeNumber(stem: String, fallbackIndex: Int): String {
         .trim()
 
     val numberPattern = """[0-9۰-۹٠-٩]+(?:[._-][0-9۰-۹٠-٩]+)?"""
-    val chapterNumber = Regex(
-        """(?i)(?:^|[^a-z])ch(?:apter)?[\s._-]*($numberPattern)"""
+    // Explicitly match compact names such as Ch2.pdf and Ch3.pdf.
+    val compactChapterNumber = Regex(
+        """(?i)^ch(?:apter)?[\\s._-]*($numberPattern)$"""
+    ).find(withoutCopySuffix)?.groupValues?.get(1)
+    val chapterNumber = compactChapterNumber ?: Regex(
+        """(?i)(?:^|[^a-z])ch(?:apter)?[\\s._-]*($numberPattern)"""
     ).find(withoutCopySuffix)?.groupValues?.get(1)
 
     val rawNumber = chapterNumber
