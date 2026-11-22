@@ -271,18 +271,71 @@ private fun collectMangaFiles(folder: File): List<File> {
     }.getOrDefault(emptyList())
 }
 
+private val PdfRendererLock = Any()
+
 private fun pdfPageCount(file: File): Int {
     if (!file.isFile || !file.extension.equals("pdf", true)) return 0
-    return runCatching {
-        val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-        val renderer = PdfRenderer(descriptor)
-        val count = renderer.pageCount
-        renderer.close()
-        descriptor.close()
-        count
-    }.getOrDefault(0)
+    return synchronized(PdfRendererLock) {
+        var descriptor: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        try {
+            descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val activeRenderer = PdfRenderer(descriptor)
+            renderer = activeRenderer
+            activeRenderer.pageCount.coerceAtLeast(0)
+        } catch (_: Exception) {
+            0
+        } catch (_: OutOfMemoryError) {
+            0
+        } finally {
+            runCatching { renderer?.close() }
+            runCatching { descriptor?.close() }
+        }
+    }
 }
 
+private fun renderPdfPageBitmap(file: File, pageIndex: Int, targetWidth: Int, maxHeight: Int): Bitmap? {
+    if (!file.isFile || !file.extension.equals("pdf", true)) return null
+    return synchronized(PdfRendererLock) {
+        var descriptor: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        var pdfPage: PdfRenderer.Page? = null
+        var bitmap: Bitmap? = null
+        try {
+            descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val activeRenderer = PdfRenderer(descriptor)
+            renderer = activeRenderer
+            if (activeRenderer.pageCount <= 0) return@synchronized null
+
+            val safeIndex = pageIndex.coerceIn(0, activeRenderer.pageCount - 1)
+            val activePage = activeRenderer.openPage(safeIndex)
+            pdfPage = activePage
+
+            // Bound decoded PDF bitmaps to avoid OOM on very tall/scanned pages.
+            val maxWidthPx = targetWidth.coerceIn(480, 1400)
+            val maxHeightPx = maxHeight.coerceIn(720, 2200)
+            val scale = minOf(
+                maxWidthPx.toFloat() / activePage.width.toFloat(),
+                maxHeightPx.toFloat() / activePage.height.toFloat()
+            )
+            val width = (activePage.width * scale).roundToInt().coerceIn(1, maxWidthPx)
+            val height = (activePage.height * scale).roundToInt().coerceIn(1, maxHeightPx)
+            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            activePage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            bitmap
+        } catch (_: Exception) {
+            runCatching { bitmap?.recycle() }
+            null
+        } catch (_: OutOfMemoryError) {
+            runCatching { bitmap?.recycle() }
+            null
+        } finally {
+            runCatching { pdfPage?.close() }
+            runCatching { renderer?.close() }
+            runCatching { descriptor?.close() }
+        }
+    }
+}
 private fun resolvePageCount(context: Context, file: File): Int {
     val saved = MangaStore.getProgress(context, file).total
     if (saved > 0) return saved
@@ -329,86 +382,62 @@ private fun loadFolderUi(context: Context, folder: File): MangaFolderUi {
     )
 }
 
-private fun loadCoverBitmap(context: Context, file: File): Bitmap? {
-    if (!file.exists()) return null
-    val cache = File(context.cacheDir, "manga-cover-${file.absolutePath.hashCode()}-${file.length()}-${file.lastModified()}.jpg")
-    if (cache.exists() && cache.length() > 0L) return BitmapFactory.decodeFile(cache.absolutePath)
-    val bitmap = if (file.extension.lowercase(Locale.ROOT) in ImageExtensions) {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.absolutePath, bounds)
-        var sample = 1
-        while (bounds.outWidth / sample > 720 || bounds.outHeight / sample > 960) sample *= 2
-        BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
-    } else if (file.extension.equals("pdf", true)) {
-        runCatching {
-            val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-            val renderer = PdfRenderer(descriptor)
-            if (renderer.pageCount == 0) {
-                renderer.close()
-                descriptor.close()
-                null
-            } else {
-                val page = renderer.openPage(0)
-                val width = 520
-                val height = (width.toFloat() * page.height / page.width).toInt().coerceAtLeast(1)
-                val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                page.render(output, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                page.close()
-                renderer.close()
-                descriptor.close()
-                output
-            }
-        }.getOrNull()
-    } else if (file.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z")) {
-        MangaArchivePages.pages(context, file).firstOrNull()?.let(::loadImagePage)
-    } else null
+private fun loadCoverBitmap(context: Context, file: File): Bitmap? = runCatching {
+    if (!file.exists() || !file.isFile) return@runCatching null
+    val cache = File(
+        context.cacheDir,
+        "manga-cover-${file.absolutePath.hashCode()}-${file.length()}-${file.lastModified()}.jpg"
+    )
+    if (cache.exists() && cache.length() > 0L) {
+        BitmapFactory.decodeFile(cache.absolutePath)?.let { return@runCatching it }
+    }
+
+    val bitmap = when (file.extension.lowercase(Locale.ROOT)) {
+        in ImageExtensions -> loadImagePage(file, maxWidth = 720, maxHeight = 960)
+        "pdf" -> renderPdfPageBitmap(file, 0, targetWidth = 520, maxHeight = 920)
+        "cbz", "zip", "cbr", "rar", "7z" ->
+            MangaArchivePages.pages(context, file).firstOrNull()?.let { loadImagePage(it, 720, 960) }
+        else -> null
+    }
+
     if (bitmap != null) {
         runCatching {
             cache.parentFile?.mkdirs()
             FileOutputStream(cache).use { bitmap.compress(Bitmap.CompressFormat.JPEG, 86, it) }
         }
-        return bitmap
     }
-    return null
-}
-
+    bitmap
+}.getOrNull()
 private fun renderMangaPage(context: Context, file: File, pageIndex: Int, targetWidth: Int): Bitmap? {
-    if (!file.extension.equals("pdf", true)) {
-        if (file.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z")) {
-            return MangaArchivePages.pages(context, file).getOrNull(pageIndex)?.let(::loadImagePage)
-        }
-        return loadImagePage(file)
+    return when (file.extension.lowercase(Locale.ROOT)) {
+        "pdf" -> renderPdfPageBitmap(file, pageIndex, targetWidth, maxHeight = 2200)
+        "cbz", "zip", "cbr", "rar", "7z" ->
+            MangaArchivePages.pages(context, file).getOrNull(pageIndex)?.let {
+                loadImagePage(it, maxWidth = 1400, maxHeight = 2200)
+            }
+        in ImageExtensions -> loadImagePage(file, maxWidth = 1400, maxHeight = 2200)
+        else -> null
     }
-    return runCatching {
-        val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-        val renderer = PdfRenderer(descriptor)
-        if (renderer.pageCount == 0) {
-            renderer.close()
-            descriptor.close()
-            return@runCatching null
-        }
-        val index = pageIndex.coerceIn(0, renderer.pageCount - 1)
-        val page = renderer.openPage(index)
-        val width = targetWidth.coerceIn(480, 1800).coerceAtMost(1800)
-        val height = (width.toFloat() * page.height / page.width).toInt().coerceAtLeast(1)
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-        page.close()
-        renderer.close()
-        descriptor.close()
-        bitmap
-    }.getOrNull()
 }
 
-private fun loadImagePage(file: File): Bitmap? {
-    if (file.extension.lowercase(Locale.ROOT) !in ImageExtensions) return null
+private fun loadImagePage(file: File, maxWidth: Int = 1800, maxHeight: Int = 2400): Bitmap? = runCatching {
+    if (!file.isFile || file.extension.lowercase(Locale.ROOT) !in ImageExtensions) return@runCatching null
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(file.absolutePath, bounds)
-    var sample = 1
-    while (bounds.outWidth / sample > 1800 || bounds.outHeight / sample > 2400) sample *= 2
-    return BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
-}
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
 
+    var sample = 1
+    while (bounds.outWidth / sample > maxWidth || bounds.outHeight / sample > maxHeight) {
+        sample *= 2
+    }
+    BitmapFactory.decodeFile(
+        file.absolutePath,
+        BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+    )
+}.getOrNull()
 private fun formatPersianNumber(value: Int): String =
     value.toString().map { if (it in '0'..'9') ('۰'.code + it.code - '0'.code).toChar() else it }.joinToString("")
 
@@ -485,13 +514,15 @@ private fun MangaCover(file: File?, modifier: Modifier = Modifier, radius: Int =
 
 @Composable
 private fun MangaProgressBar(progress: Float, modifier: Modifier = Modifier, height: Int = 7) {
-    Box(
-        modifier.fillMaxWidth().height(height.dp).clip(CircleShape).background(Color(0xFF303030))
-    ) {
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Box(
-            Modifier.fillMaxHeight().fillMaxWidth(progress.coerceIn(0f, 1f))
-                .align(Alignment.CenterEnd).clip(CircleShape).background(MangaGold)
-        )
+            modifier.fillMaxWidth().height(height.dp).clip(CircleShape).background(Color(0xFF303030))
+        ) {
+            Box(
+                Modifier.fillMaxHeight().fillMaxWidth(progress.coerceIn(0f, 1f))
+                    .align(Alignment.CenterEnd).clip(CircleShape).background(MangaGold)
+            )
+        }
     }
 }
 
@@ -512,8 +543,8 @@ fun MangaLibraryApp() {
     var recent by remember { mutableStateOf<List<RecentMangaFile>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
-    var columns by remember { mutableIntStateOf(MangaStore.settingInt(context, "columns", 2).coerceIn(1, 4)) }
-    var layout by remember { mutableStateOf(MangaStore.setting(context, "layout", "grid")) }
+    var columns by remember { mutableIntStateOf(2) }
+    var layout by remember { mutableStateOf("grid") }
     var showMetadata by remember { mutableStateOf(MangaStore.setting(context, "show_metadata", "true") != "false") }
     var accentName by remember { mutableStateOf(MangaStore.setting(context, "accent", "gold")) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -859,40 +890,23 @@ private fun LibraryHomeScreen(
                     Text("مسیر کتابخانه را از تنظیمات تغییر بده یا پوشه‌ها را در حافظه قرار بده.", color = MangaMuted, textAlign = TextAlign.Center, fontSize = 12.sp)
                 }
             }
-        } else if (layout == "list" || layout == "compact") {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                if (recent.isNotEmpty() && layout == "list") item {
-                    RecentReadingCard(recent.first(), accent, onOpenRecent)
-                }
-                items(folders, key = { it.path }) { folder ->
-                    FolderListCard(folder, compact = layout == "compact", showMetadata = showMetadata, accent = accent, onClick = { onOpenFolder(folder) })
-                }
-            }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(columns.coerceIn(1, 4)),
+                columns = GridCells.Fixed(2),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (recent.isNotEmpty()) {
-                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
-                        RecentReadingCard(recent.first(), accent, onOpenRecent)
-                    }
-                }
                 gridItems(folders, key = { it.path }) { folder ->
-                    FolderGridCard(folder, showMetadata, accent) { onOpenFolder(folder) }
+                    FolderGridCard(folder, showMetadata = true, accent = accent) {
+                        onOpenFolder(folder)
+                    }
                 }
             }
         }
     }
 }
-
 @Composable
 private fun RecentReadingCard(item: RecentMangaFile, accent: Color, onClick: (File) -> Unit) {
     val percent = if (item.total > 0) item.page.toFloat() / item.total.toFloat() else 0f
@@ -929,35 +943,60 @@ private fun FolderGridCard(folder: MangaFolderUi, showMetadata: Boolean, accent:
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(30.dp),
-        colors = CardDefaults.cardColors(containerColor = MangaBlack),
-        border = BorderStroke(1.5.dp, MangaLine)
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
+        border = BorderStroke(1.5.dp, Color(0xFF1D1D1D))
     ) {
-        Column(Modifier.fillMaxWidth().padding(10.dp)) {
-            Box(Modifier.fillMaxWidth().aspectRatio(0.77f).clip(RoundedCornerShape(24.dp))) {
-                MangaCover(folder.cover, Modifier.fillMaxSize(), 24)
-                if (folder.favorite) {
-                    Surface(color = Color(0xCC18120A), shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                        Icon(Icons.Default.Favorite, null, tint = Color(0xFFFF5B68), modifier = Modifier.padding(7.dp).size(17.dp))
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                Box(
+                    Modifier.fillMaxWidth()
+                        .aspectRatio(0.75f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(MangaPanelRaised)
+                ) {
+                    MangaCover(folder.cover, Modifier.fillMaxSize(), 18)
+                    if (folder.favorite) {
+                        Surface(
+                            color = Color(0xCC18120A),
+                            shape = CircleShape,
+                            modifier = Modifier.align(Alignment.TopEnd).padding(9.dp)
+                        ) {
+                            Icon(Icons.Default.Favorite, null, tint = Color(0xFFFF5B68), modifier = Modifier.padding(7.dp).size(17.dp))
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.height(9.dp))
-            Text(folder.title, color = MangaWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (showMetadata) {
-                Spacer(Modifier.height(3.dp))
+                Spacer(Modifier.height(9.dp))
                 Text(
-                    if (folder.totalPages > 0) "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.percent)}٪"
-                    else "${formatPersianNumber(folder.files.size)} فایل",
-                    color = MangaMuted, fontSize = 13.sp, maxLines = 1
+                    folder.title,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MangaWhite,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Left
+                )
+                if (showMetadata) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.percent)}٪",
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MangaMuted,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        textAlign = TextAlign.Right
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                MangaProgressBar(
+                    if (folder.totalPages > 0) folder.percent / 100f else 0f,
+                    height = 6
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            MangaProgressBar(if (folder.totalPages > 0) folder.percent / 100f else 0f, height = 7)
         }
     }
 }
-
 @Composable
 private fun FolderListCard(folder: MangaFolderUi, compact: Boolean, showMetadata: Boolean, accent: Color, onClick: () -> Unit) {
     Card(
@@ -1253,21 +1292,18 @@ private fun SettingsScreen(
         }
     }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        SettingsGroup("چیدمان کتابخانه", "تعداد ستون‌ها و نوع نمایش کارت‌ها را مطابق سلیقه‌ات تنظیم کن.")
-        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            (1..4).forEach { count ->
-                FilterChip(
-                    selected = columns == count,
-                    onClick = { onColumnsChange(count) },
-                    label = { Text("$count ستون") },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MangaGold, selectedLabelColor = MangaBlack)
-                )
+        SettingsGroup("چیدمان کتابخانه", "نمایش جلدها به‌صورت شبکه‌ای دو ستونه، مطابق طرح اصلی کتابخانه.")
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MangaPanel,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, MangaLine)
+        ) {
+            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.GridView, null, tint = MangaGold)
+                Spacer(Modifier.width(10.dp))
+                Text("شبکه‌ای · دو ستون · جلد بزرگ", color = MangaWhite, fontWeight = FontWeight.SemiBold)
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            FilterChip(selected = layout == "grid", onClick = { onLayoutChange("grid") }, label = { Icon(Icons.Default.GridView, null); Spacer(Modifier.width(5.dp)); Text("شبکه‌ای") })
-            FilterChip(selected = layout == "list", onClick = { onLayoutChange("list") }, label = { Icon(Icons.Default.ViewList, null); Spacer(Modifier.width(5.dp)); Text("فهرستی") })
-            FilterChip(selected = layout == "compact", onClick = { onLayoutChange("compact") }, label = { Text("فشرده") })
         }
         HorizontalDivider(color = MangaLine)
         SettingsGroup("اطلاعات کارت‌ها", "نمایش تعداد فایل‌ها و درصد پیشرفت زیر هر جلد.")
@@ -1367,22 +1403,28 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
     var pageImage by remember(file.absolutePath) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(file.absolutePath) { mutableStateOf("") }
     var readerMode by remember(file.absolutePath) {
-        mutableStateOf(MangaStore.setting(context, "reader_mode", "right"))
+        mutableStateOf(
+            MangaStore.setting(context, "reader_mode", "right")
+                .takeIf { it == "right" || it == "right_vertical" } ?: "right"
+        )
     }
     var modeMenuOpen by remember { mutableStateOf(false) }
     var verticalSeekTarget by remember(file.absolutePath) { mutableIntStateOf(-1) }
     val density = LocalDensity.current
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (savedProgress.page - 1).coerceAtLeast(0))
+    val listState = rememberLazyListState()
     BackHandler(onBack = onBack)
 
     LaunchedEffect(file.absolutePath) {
         val count = withContext(Dispatchers.IO) {
-            when (file.extension.lowercase(Locale.ROOT)) {
-                "pdf" -> pdfPageCount(file)
-                "cbz", "zip", "cbr", "rar", "7z" -> MangaArchivePages.pages(context, file).size
-                in ImageExtensions -> 1
-                else -> 0
-            }
+            runCatching {
+                if (!file.exists() || !file.isFile) return@runCatching 0
+                when (file.extension.lowercase(Locale.ROOT)) {
+                    "pdf" -> pdfPageCount(file)
+                    "cbz", "zip", "cbr", "rar", "7z" -> MangaArchivePages.pages(context, file).size
+                    in ImageExtensions -> 1
+                    else -> 0
+                }
+            }.getOrDefault(0)
         }
         if (count > 0) {
             total = count
@@ -1390,7 +1432,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
             page = MangaStore.getProgress(context, file).page.coerceIn(1, count)
             initialized = true
         } else {
-            error = "این فایل قابل باز شدن نیست؛ فرمت یا محتوای آن پشتیبانی نمی‌شود."
+            error = "این PDF یا فایل مانگا قابل خواندن نیست. ممکن است فایل خراب، رمزگذاری‌شده یا ناقص باشد."
         }
     }
 
@@ -1621,7 +1663,9 @@ private fun MangaReaderPageItem(file: File, pageIndex: Int, targetWidth: Int) {
         file.lastModified()
     ) {
         value = withContext(Dispatchers.IO) {
-            renderMangaPage(context, file, pageIndex, targetWidth)?.asImageBitmap()
+            runCatching {
+                renderMangaPage(context, file, pageIndex, targetWidth)?.asImageBitmap()
+            }.getOrNull()
         }
         loaded = true
     }
