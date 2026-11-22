@@ -337,17 +337,7 @@ private fun MangaFileManager() {
         confirmButton = { Button(onClick = {
             if (seriesName.isBlank()) { status = "نام مانگا را وارد کن."; return@Button }
             if (seriesName.any { it in "\\\\/:*?<>|\"" }) { status = "نام واردشده دارای نویسه غیرمجاز است."; return@Button }
-            val targets = renameRows.map { it.second.lowercase(Locale.ROOT) }
-            val movingSources = renameRows.map { it.first.absoluteFile.normalize().path }.toSet()
-            val externalConflicts = renameRows.filter { (source, newName) ->
-                val target = File(source.parentFile, newName).absoluteFile.normalize().path
-                File(target).exists() && target !in movingSources
-            }
-            if (targets.size != targets.distinct().size || externalConflicts.isNotEmpty()) {
-                status = if (targets.size != targets.distinct().size) "چند فایل نام مقصد یکسان دارند؛ الگوی نام را اصلاح کن."
-                    else "نام مقصد بعضی فایل‌ها با یک فایل خارج از انتخاب تداخل دارد."
-                return@Button
-            }
+            // Per-file conflicts are handled independently in the worker; they must not cancel the whole batch.
             if (isRenaming || pendingRename.isNotEmpty()) return@Button
             pendingRename = renameRows.filter { (source, newName) -> source.name != newName }
             if (pendingRename.isEmpty()) { status = "هیچ فایلی نیاز به تغییر نام ندارد."; return@Button }
