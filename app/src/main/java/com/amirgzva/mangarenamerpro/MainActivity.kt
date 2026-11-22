@@ -231,15 +231,7 @@ private fun MangaFileManager() {
     val renameRows = renameCandidates.mapIndexed { index, file ->
         val ext = file.extension
         val stem = if (ext.isBlank()) file.name else file.nameWithoutExtension
-        val number = Regex("[0-9۰-۹٠-٩]+(?:[._-][0-9۰-۹٠-٩]+)?").findAll(stem).lastOrNull()?.value
-            ?: (index + 1).toString().padStart(3, '0')
-        val normalized = number.map { ch ->
-            when (ch) {
-                in '۰'..'۹' -> ('0'.code + ch.code - '۰'.code).toChar()
-                in '٠'..'٩' -> ('0'.code + ch.code - '٠'.code).toChar()
-                else -> ch
-            }
-        }.joinToString("").replace('_', '.').replace('-', '.')
+        val normalized = extractEpisodeNumber(stem, index + 1)
         file to if (ext.isBlank()) "$seriesName $normalized" else "$seriesName $normalized.$ext"
     }
 
@@ -371,6 +363,35 @@ private fun MangaFileManager() {
         }, enabled = renameRows.isNotEmpty() && seriesName.isNotBlank() && !isRenaming, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) { Text(if (isRenaming) "در حال اجرا…" else "اعمال تغییرات") } },
         dismissButton = { TextButton(onClick = { renameOpen = false }) { Text("انصراف") } }
     )
+}
+
+/**
+ * Extract the real episode/chapter number from a manga filename.
+ * A trailing "(1)", "(2)", etc. is a duplicate-copy suffix, not an episode number.
+ * Prefer an explicit CH/Chapter marker (including compact names such as "Ch2"),
+ * then fall back to the last numeric group in the remaining filename.
+ */
+private fun extractEpisodeNumber(stem: String, fallbackIndex: Int): String {
+    val withoutCopySuffix = stem
+        .replace(Regex("""\\s*\\(\\s*[0-9۰-۹٠-٩]+\\s*\\)\\s*$"""), "")
+        .trim()
+
+    val numberPattern = """[0-9۰-۹٠-٩]+(?:[._-][0-9۰-۹٠-٩]+)?"""
+    val chapterNumber = Regex(
+        """(?i)(?:^|[^a-z])ch(?:apter)?[\\s._-]*($numberPattern)"""
+    ).find(withoutCopySuffix)?.groupValues?.get(1)
+
+    val rawNumber = chapterNumber
+        ?: Regex(numberPattern).findAll(withoutCopySuffix).lastOrNull()?.value
+        ?: fallbackIndex.toString().padStart(3, '0')
+
+    return rawNumber.map { ch ->
+        when (ch) {
+            in '۰'..'۹' -> ('0'.code + ch.code - '۰'.code).toChar()
+            in '٠'..'٩' -> ('0'.code + ch.code - '٠'.code).toChar()
+            else -> ch
+        }
+    }.joinToString("").replace('_', '.').replace('-', '.')
 }
 
 private fun hasAllFilesAccess(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else true
