@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -80,6 +81,15 @@ internal fun MangaFileManager(onExit: () -> Unit = {}, onOpenMangaFile: (File) -
     var renameOpen by remember { mutableStateOf(false) }
     var seriesName by remember { mutableStateOf("") }
     val selected = remember { mutableStateListOf<String>() }
+    val storageRootPath = remember { Environment.getExternalStorageDirectory().absolutePath }
+    BackHandler {
+        if (currentPath != storageRootPath) {
+            currentPath = File(currentPath).parent ?: storageRootPath
+            selected.clear()
+        } else {
+            onExit()
+        }
+    }
     var pendingRename by remember { mutableStateOf<List<Pair<File, String>>>(emptyList()) }
     var isRenaming by remember { mutableStateOf(false) }
 
