@@ -438,7 +438,7 @@ private class PdfDocumentSession(private val file: File) : Closeable {
 
 private val PdfRendererLock = Any()
 
-private fun openPdfWithComicScreen(context: Context, file: File) {
+private fun openPdfWithSystemViewer(context: Context, file: File) {
     if (!file.isFile || !file.exists()) {
         Toast.makeText(context, "فایل PDF پیدا نشد.", Toast.LENGTH_SHORT).show()
         return
@@ -816,7 +816,7 @@ fun MangaLibraryApp() {
     val openLibraryFile: (File) -> Unit = remember(pdfOpenMode) {
         { selectedFile ->
             if (selectedFile.extension.equals("pdf", true) && pdfOpenMode == "external") {
-                openPdfWithComicScreen(context, selectedFile)
+                openPdfWithSystemViewer(context, selectedFile)
             } else {
                 readerFile = selectedFile
             }
@@ -837,15 +837,19 @@ fun MangaLibraryApp() {
         else -> MangaGold
     }
 
-    BackHandler(enabled = readerFile == null && !showFileManager) {
+    // Android Back and the visible back arrows share one navigation path.
+    val handleAppBack: () -> Unit = {
         when {
+            menuOpen -> menuOpen = false
+            filterOpen -> filterOpen = false
             searchOpen -> { searchOpen = false; searchQuery = "" }
             selectedFolderPath != null -> { selectedFolderPath = null; detailFolder = null }
             activeTab != "library" -> activeTab = "library"
-            menuOpen -> menuOpen = false
-            filterOpen -> filterOpen = false
             else -> exitDialogOpen = true
         }
+    }
+    BackHandler(enabled = readerFile == null && !showFileManager) {
+        handleAppBack()
     }
 
     LaunchedEffect(rootPath, refreshKey, hasAccess) {
@@ -922,16 +926,16 @@ fun MangaLibraryApp() {
                                             modifier = Modifier.fillMaxWidth()
                                         )
                                     } else {
-                                        Text(
-                                            when (activeTab) {
-                                                "reading" -> "در حال مطالعه"
-                                                "favorites" -> "علاقه‌مندی‌های من"
-                                                else -> "MANGA RENAMER"
-                                            },
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 22.sp,
-                                            color = MangaWhite
-                                        )
+                                        if (activeTab == "library") {
+                                            Spacer(Modifier.width(1.dp))
+                                        } else {
+                                            Text(
+                                                if (activeTab == "reading") "در حال مطالعه" else "علاقه‌مندی‌های من",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 22.sp,
+                                                color = MangaWhite
+                                            )
+                                        }
                                     }
                                 },
                                 actions = {
@@ -963,7 +967,7 @@ fun MangaLibraryApp() {
                         } else if (selectedFolderPath != null) {
                             TopAppBar(
                                 title = { Spacer(Modifier.width(1.dp)) },
-                                navigationIcon = { IconButton(onClick = { selectedFolderPath = null; detailFolder = null }) { Icon(Icons.Default.ArrowBack, "بازگشت", tint = MangaWhite) } },
+                                navigationIcon = { IconButton(onClick = handleAppBack) { Icon(Icons.Default.ArrowBack, "بازگشت", tint = MangaWhite) } },
                                 actions = {
                                     Box {
                                         IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "گزینه‌ها", tint = MangaWhite) }
@@ -982,7 +986,7 @@ fun MangaLibraryApp() {
                         } else {
                             TopAppBar(
                                 title = { Text("تنظیمات", color = MangaWhite, fontWeight = FontWeight.Bold) },
-                                navigationIcon = { IconButton(onClick = { activeTab = "library" }) { Icon(Icons.Default.ArrowBack, "بازگشت", tint = MangaWhite) } },
+                                navigationIcon = { IconButton(onClick = handleAppBack) { Icon(Icons.Default.ArrowBack, "بازگشت", tint = MangaWhite) } },
                                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MangaBlack)
                             )
                         }
@@ -1199,45 +1203,71 @@ private fun LibraryHomeScreen(
     }
     val inProgress = folders.count { it.readPages > 0 && it.percent < 100 }
     val completed = folders.count { it.totalPages > 0 && it.percent >= 100 }
+    val unread = (folders.size - inProgress - completed).coerceAtLeast(0)
     val rows = orderedFolders.chunked(columns.coerceIn(1, 4))
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MangaBlack),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
-        item(key = "library-identity") {
-            Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("YOUR MANGA SPACE", color = accent, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp)
-                        Text("کتابخانه من", color = MangaWhite, fontSize = 27.sp, fontWeight = FontWeight.ExtraBold)
-                        Text("مجموعه‌ای برای ادامه داستان‌هایت", color = MangaMuted, fontSize = 12.sp)
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = MangaPanel,
-                        border = BorderStroke(1.dp, MangaLine)
-                    ) {
-                        Icon(Icons.Default.LocalLibrary, null, tint = accent, modifier = Modifier.padding(15.dp).size(27.dp))
-                    }
-                }
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    color = Color(0xFF171717),
-                    border = BorderStroke(1.dp, Color(0xFF302B20))
+        item(key = "library-hero") {
+            Box(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(Brush.linearGradient(listOf(Color(0xFF292316), Color(0xFF171511), Color(0xFF121212))))
+                    .border(1.dp, Color(0xFF3A3222), RoundedCornerShape(28.dp))
+            ) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).size(190.dp)
+                        .background(
+                            Brush.radialGradient(listOf(accent.copy(alpha = 0.22f), Color.Transparent)),
+                            CircleShape
+                        )
+                )
+                Column(
+                    Modifier.fillMaxWidth().padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("MANGA ATELIER", color = accent, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.1.sp)
+                            Text("کتابخانه من", color = MangaWhite, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+                            Text("آرشیو شخصی داستان‌هایی که دنبال می‌کنی", color = MangaMuted, fontSize = 11.sp)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(17.dp),
+                            color = Color(0xFF0C0C0C).copy(alpha = 0.65f),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.32f))
+                        ) {
+                            Icon(Icons.Default.LocalLibrary, null, tint = accent, modifier = Modifier.padding(13.dp).size(28.dp))
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LibraryStat(value = "${formatPersianNumber(folders.size)}", label = "مجموعه", accent = accent, modifier = Modifier.weight(1f))
+                        LibraryStat(value = "${formatPersianNumber(inProgress)}", label = "در حال مطالعه", accent = MangaGreen, modifier = Modifier.weight(1f))
+                        LibraryStat(value = "${formatPersianNumber(completed)}", label = "تکمیل‌شده", accent = MangaGold, modifier = Modifier.weight(1f))
+                    }
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        LibraryStat(value = "${formatPersianNumber(folders.size)}", label = "مانگا", accent = accent, modifier = Modifier.weight(1f))
-                        Box(Modifier.width(1.dp).height(32.dp).background(MangaLine))
-                        LibraryStat(value = "${formatPersianNumber(inProgress)}", label = "در حال مطالعه", accent = MangaGreen, modifier = Modifier.weight(1f))
-                        Box(Modifier.width(1.dp).height(32.dp).background(MangaLine))
-                        LibraryStat(value = "${formatPersianNumber(completed)}", label = "تکمیل‌شده", accent = MangaGold, modifier = Modifier.weight(1f))
+                        Text(
+                            if (unread > 0) "${formatPersianNumber(unread)} عنوان هنوز شروع نشده" else "همه داستان‌هایت را به‌روز نگه دار",
+                            color = Color(0xFFC6BDAA),
+                            fontSize = 10.sp
+                        )
+                        Text(
+                            when (layout) {
+                                "list" -> "نمای فهرستی"
+                                "compact" -> "نمای فشرده"
+                                else -> "$columns ستون"
+                            },
+                            color = accent,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -1248,10 +1278,12 @@ private fun LibraryHomeScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text("از همان‌جا ادامه بده", color = MangaWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            Text("آخرین فایلی که باز کرده‌ای", color = MangaMuted, fontSize = 11.sp)
+                            Text("ادامه از آخرین مطالعه", color = MangaWhite, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text("مستقیم به همان صفحه برگرد", color = MangaMuted, fontSize = 11.sp)
                         }
-                        Icon(Icons.Default.History, null, tint = accent)
+                        Surface(shape = CircleShape, color = accent.copy(alpha = 0.12f)) {
+                            Icon(Icons.Default.History, null, tint = accent, modifier = Modifier.padding(9.dp).size(19.dp))
+                        }
                     }
                     RecentReadingCard(recent.first(), accent, onOpenRecent)
                 }
@@ -1259,26 +1291,28 @@ private fun LibraryHomeScreen(
         }
 
         item(key = "collection-heading") {
-            Row(verticalAlignment = Alignment.Bottom) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("مجموعه تو", color = MangaWhite, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("مانگاها و وضعیت مطالعه", color = MangaMuted, fontSize = 11.sp)
+                    Text("قفسه مانگاها", color = MangaWhite, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
+                    Text("جلدها و میزان پیشرفت هر مجموعه", color = MangaMuted, fontSize = 11.sp)
                 }
-                Surface(shape = RoundedCornerShape(12.dp), color = accent.copy(alpha = 0.13f)) {
-                    Text(
-                        "${formatPersianNumber(folders.size)} عنوان",
-                        color = accent,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
-                    )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = accent.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, accent.copy(alpha = 0.25f))
+                ) {
+                    Row(Modifier.padding(horizontal = 11.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.GridView, null, tint = accent, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("${formatPersianNumber(folders.size)} عنوان", color = accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
 
         if (loading) {
             item(key = "loading") {
-                LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent, trackColor = MangaPanel)
+                LinearProgressIndicator(Modifier.fillMaxWidth().clip(CircleShape), color = accent, trackColor = MangaPanel)
             }
         }
 
@@ -1291,14 +1325,21 @@ private fun LibraryHomeScreen(
                     border = BorderStroke(1.dp, MangaLine)
                 ) {
                     Column(
-                        Modifier.fillMaxWidth().padding(26.dp),
+                        Modifier.fillMaxWidth().padding(25.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(9.dp)
                     ) {
-                        Icon(Icons.Default.LibraryBooks, null, tint = accent, modifier = Modifier.size(46.dp))
-                        Text("کتابخانه هنوز خالی است", color = MangaWhite, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                        Text("پوشه مادر را از تنظیمات انتخاب کن. پوشه‌های داخل آن به‌صورت خودکار به مجموعه اضافه می‌شوند.", color = MangaMuted, fontSize = 12.sp, textAlign = TextAlign.Center)
-                        Text(rootPath, color = accent, fontSize = 10.sp, textAlign = TextAlign.Center)
+                        Surface(shape = CircleShape, color = accent.copy(alpha = 0.12f)) {
+                            Icon(Icons.Default.LibraryBooks, null, tint = accent, modifier = Modifier.padding(17.dp).size(34.dp))
+                        }
+                        Text("قفسه‌ات هنوز خالی است", color = MangaWhite, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                        Text(
+                            "پوشه مادر را در تنظیمات انتخاب کن. پوشه‌های داخل آن به‌صورت خودکار به کتابخانه اضافه می‌شوند.",
+                            color = MangaMuted,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(rootPath, color = accent, fontSize = 10.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -1611,16 +1652,22 @@ private fun MangaDetailScreen(
         ?: folder.files.firstOrNull { it.extension.lowercase(Locale.ROOT) in setOf("cbz", "zip", "cbr", "rar", "7z") }
         ?: folder.files.firstOrNull { it.extension.lowercase(Locale.ROOT) in ImageExtensions }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(15.dp)
+        ) {
             MangaCover(folder.cover, Modifier.width(132.dp).height(190.dp), 22)
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Column(
+                Modifier.weight(1f).height(190.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Surface(
                     color = if (folder.percent >= 100 && folder.totalPages > 0) Color(0xFF173323) else Color(0xFF272114),
                     shape = RoundedCornerShape(24.dp)
                 ) {
-                    Row(Modifier.padding(horizontal = 11.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(6.dp).clip(CircleShape).background(if (folder.percent >= 100 && folder.totalPages > 0) MangaGreen else accent))
+                    Row(Modifier.padding(horizontal = 11.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(if (folder.percent >= 100 && folder.totalPages > 0) MangaGreen else accent))
                         Spacer(Modifier.width(7.dp))
                         Text(
                             when {
@@ -1634,28 +1681,44 @@ private fun MangaDetailScreen(
                         )
                     }
                 }
-                Text(
-                    "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.totalPages)} صفحه",
-                    color = MangaMuted,
-                    fontSize = 12.sp
-                )
-                Text(
-                    "${formatPersianNumber(folder.percent)}٪ پیشرفت",
-                    color = MangaGreen,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(Modifier.weight(1f, fill = false))
-                Text(
-                    folder.title,
-                    color = MangaWhite,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text("عنوان مانگا", color = MangaMuted, fontSize = 10.sp)
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("وضعیت مجموعه", color = MangaMuted, fontSize = 10.sp)
+                    Text(
+                        "${formatPersianNumber(folder.files.size)} فایل · ${formatPersianNumber(folder.totalPages)} صفحه",
+                        color = MangaWhite,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("پیشرفت", color = MangaMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        Text("${formatPersianNumber(folder.percent)}٪", color = MangaGreen, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                    MangaProgressBar(if (folder.totalPages > 0) folder.percent / 100f else 0f, height = 7)
+                }
+                if (lastFile != null && folder.lastPage > 0) {
+                    Text(
+                        "آخرین مطالعه · ${lastFile.name}",
+                        color = MangaMuted,
+                        fontSize = 9.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
+        }
+        Spacer(Modifier.height(12.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                folder.title,
+                color = MangaWhite,
+                fontSize = 25.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text("MANGA COLLECTION", color = accent, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.7.sp)
         }
         Spacer(Modifier.height(17.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1951,14 +2014,14 @@ private fun SettingsScreen(
                 )
                 if (pdfOpenMode == "external") {
                     Text(
-                        "در اولین بازکردن PDF، برنامه دلخواهت را انتخاب کن و گزینه «همیشه» را بزن تا دفعات بعد مستقیم باز شود.",
+                        "پیشنهاد برای بیشترین وضوح: PDFخوان اختصاصی. در اولین بازکردن، برنامه دلخواهت را انتخاب کن و «همیشه» را بزن.",
                         color = accentColor,
                         fontSize = 10.sp,
                         lineHeight = 16.sp
                     )
                 } else {
                     Text(
-                        "خواننده داخلی صفحات را برای نمایشگر گوشی رندر می‌کند؛ برای ابزارهای کامل و نمایش برداری PDF، PDFخوان بیرونی مناسب‌تر است.",
+                        "فایل اصلی دست‌نخورده می‌ماند. نمایش داخلی برای اندازه نمایشگر رندر می‌شود؛ برای زوم و حفظ نمایش برداری کامل، PDFخوان اختصاصی را انتخاب کن.",
                         color = MangaMuted,
                         fontSize = 10.sp,
                         lineHeight = 16.sp
@@ -2374,7 +2437,7 @@ private fun MangaReaderScreen(file: File, accent: Color, onBack: () -> Unit) {
                                     leadingIcon = { Icon(Icons.Default.OpenInNew, null, tint = accent) },
                                     onClick = {
                                         externalMenuOpen = false
-                                        openPdfWithComicScreen(context, file)
+                                        openPdfWithSystemViewer(context, file)
                                     }
                                 )
                             }
